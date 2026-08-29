@@ -86,20 +86,34 @@ image: 160x160, 0.00 px/mm
 minutiae detected: 11
 ```
 
-Two defects behind those numbers, both now fixed in `deliver_image`:
+Two candidate defects behind those numbers. **Both were tried and reverted**
+— see below — but they are recorded because the reasoning still holds and
+the second is probably still worth fixing on its own:
 
 - **No `FPI_IMAGE_PARTIAL`.** On a 160x160 patch the image edge is not the
   finger's edge, so every ridge running out of frame reads as a ridge
   ending. The flag makes NBIS drop those perimeter artefacts; `elan.c` and
-  `elanspi.c` both set it for the same reason. Without it the spurious
-  minutiae pollute the template and the verification image alike.
+  `elanspi.c` both set it for the same reason.
 - **`ppmm` left at 0.0.** NBIS sizes the neighbourhood it scores each
   minutia's reliability over as `RADIUS_MM * ppmm`, so zero collapses it to
-  no pixels at all. Set from the FPC family's stated 508 dpi.
+  no pixels at all. The FPC capacitive family is specified at 508 dpi.
 
-11 minutiae is thin either way — bozorth3 needs overlap between two sets —
-so if matching stays weak after this, the next lever is the image-quality
-gating below, which would stop poor frames entering the template at all.
+**Setting both made enrollment worse, not better.** Captures still succeeded
+(`CAPTURE_NUM_STATES completed successfully`) but no enroll stage ever
+passed — libfprint accepted none of the images, and the enrollment sat there
+until it was interrupted. Starting from 11 minutiae, `FPI_IMAGE_PARTIAL`
+evidently removes enough of them to fall under whatever libfprint needs to
+accept a stage. The flag is right in principle and wrong at this minutia
+count.
+
+Reverted to the state where enrollment completes. Worth retrying separately:
+`ppmm` alone, since it only affects reliability scoring and was never the
+suspect for stage rejection, and the two were changed together — which made
+it impossible to tell which one did the damage.
+
+The real lever is likely upstream of all this: 11 minutiae is thin, bozorth3
+needs overlap between two sets, and nothing currently stops a poor frame
+entering the template. That is the image-quality gating below.
 
 Also not yet done:
 - The "await finger" retry-loop timing (`FPC_RETRY_DELAY_MS`,
