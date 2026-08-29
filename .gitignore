@@ -1,9 +1,11 @@
-src/fpc_capture
+build/
 *.o
 *.bin
 *.png
+*.jsonl
 .work/
 pkg-libfprint/pkg/
 pkg-libfprint/src/
 pkg-libfprint/*.pkg.tar.zst
 pkg-libfprint/*.log
+usbmon-*.txt

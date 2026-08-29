@@ -36,7 +36,7 @@ before reading, or you will read the wrong command's reply.
 |---|---|---|---|
 | 0 | 2 | `status` | `0x1000 \| opcode`, i.e. it echoes which command this is acknowledging. Not a generic "ready/busy" flag. |
 | 2 | 2 | `substatus` | `0` = OK. Nonzero = error/reject. `5` has been observed as a transient "not ready yet" value — treat as retryable. |
-| 4 | 2 | `length` | Only present on replies longer than 4 bytes (e.g. capture). Total payload size to expect. |
+| 4 | 2 | *opcode-dependent* | Only present on replies longer than 4 bytes. Its meaning depends on the command being acknowledged: total payload size to expect on a Capture reply, the chip-ID word on a Get Chip ID reply. Decode it by `status`, not by the reply's size. |
 | 6+ | up to 58 | `payload` | First chunk of payload, if any. |
 
 A short (4-byte) reply is normal for commands with no payload (e.g. reset) —
@@ -88,6 +88,14 @@ Observed in the Windows driver; useful for a well-behaved retry loop:
 - After writing Reset, wait ~15ms before writing Capture; wait ~10ms after writing Capture before reading.
 - When waiting for the reset command to complete, poll for up to ~500ms.
 - When retrying a capture due to poor image quality (see below), pace retries about ~810ms apart.
+
+Measured on real hardware (2026-08-29, FPC1021, 11 consecutive captures via
+`tools/fpc_probe`): the capture reply arrives **~1590ms** after the Capture
+command, strikingly constant once warmed up (1497, 2006, 1361, then 1590 ±80
+for the rest). That looks like a fixed internal acquisition time rather than
+a wait for a finger. Streaming the 25600-byte image back over 412 further
+packets adds ~110ms, for ~1.7s per capture end to end. A 3000ms read timeout
+therefore has under 2x of headroom over the typical case.
 
 ## Image quality (not yet ported)
 
