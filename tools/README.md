@@ -115,6 +115,27 @@ Two fields carry most of the diagnostic weight:
 
 The file is line-buffered, so a trace survives killing a wedged process.
 
+## Watching a run live
+
+`trace-watch.sh` follows the newest trace as it is written, which is how to
+watch a session from a second terminal while driving the probe in the first:
+
+```sh
+tools/trace-watch.sh          # pane 2: waits for a trace, then follows it
+sudo ./build/fpc_probe -t -   # pane 1: '-' auto-names the trace by timestamp
+```
+
+```
+     7.326  <  chip_id.reply 6B      sub=0 chip_id=539
+   100      *  capture_begin  #1
+  3130      <  capture.hdr   0B      LIBUSB_ERROR_TIMEOUT  [3000ms]
+  9000      *  wedge          6 consecutive timeouts; first was capture #3
+```
+
+Transfers that took more than 100ms are called out in brackets; everything
+else on this sensor answers in well under a millisecond, so a bracket is
+always worth a look.
+
 ## Diffing two runs
 
 The point of the JSONL sink. Compare the captures that worked against the one
