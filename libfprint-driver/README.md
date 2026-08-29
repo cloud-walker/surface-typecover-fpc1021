@@ -52,6 +52,20 @@ above. It was found already stuck, not observed entering, and the wedge
 proper requires successful captures first. Reproducing it from a
 known-good device is the next measurement.
 
+**Update: the wedge does not reproduce on plain libusb.** From a
+freshly replugged device, `fpc_probe`'s `loop 10` ran 11 consecutive
+captures (one `cap` plus ten in the loop), 200ms apart, with zero timeouts
+and a full 25600-byte image every time. The documented wedge appears after
+2-3, so whatever causes it is very unlikely to be the protocol or the
+hardware.
+
+What that run did *not* exercise is the open/close cycle: it captured ten
+times inside a single session, claiming the interface once. libfprint opens
+and closes the image device around enrollment stages (`Image device close
+completed` in the fprintd logs). So the untested variable is not repeated
+capture but **repeated activate/deactivate**, which is where the
+investigation should go next.
+
 Also not yet done:
 - The "await finger" retry-loop timing (`FPC_RETRY_DELAY_MS`,
   `FPC_CAPTURE_COOLDOWN_MS`, the 3000ms read timeout in

@@ -89,6 +89,14 @@ Observed in the Windows driver; useful for a well-behaved retry loop:
 - When waiting for the reset command to complete, poll for up to ~500ms.
 - When retrying a capture due to poor image quality (see below), pace retries about ~810ms apart.
 
+Measured on real hardware (2026-08-29, FPC1021, 11 consecutive captures via
+`tools/fpc_probe`): the capture reply arrives **~1590ms** after the Capture
+command, strikingly constant once warmed up (1497, 2006, 1361, then 1590 ±80
+for the rest). That looks like a fixed internal acquisition time rather than
+a wait for a finger. Streaming the 25600-byte image back over 412 further
+packets adds ~110ms, for ~1.7s per capture end to end. A 3000ms read timeout
+therefore has under 2x of headroom over the typical case.
+
 ## Image quality (not yet ported)
 
 The Windows driver classifies each captured frame into one of four buckets —
