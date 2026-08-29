@@ -32,6 +32,26 @@ routine (`FUN_1800072a4`) to a *different* object's vtable+0x60 that was
 never traced — see project memory / a future session for details. This
 is the main blocker before this driver is genuinely useful day-to-day.
 
+**Update (2026-08-29, later that day), on the reset that is supposed to
+cure it:** a session with `tools/fpc_probe` found the sensor already in the
+stuck state — the soft reset opcode `0x0008` replying normally with `sub=0`
+in ~0.25ms, while every capture reply timed out, across an hour and every
+attempt. `libusb_reset_device()` returned `ok` and **did not clear it**.
+Physically unplugging and replugging the Type Cover did, immediately: the
+very next capture succeeded on the first finger press, both through the
+original prototype and through the probe.
+
+`g_usb_device_reset()` is the same `USBDEVFS_RESET` ioctl, so the claim
+above that it fixes the wedge needs re-testing. If it doesn't, the driver's
+auto-recovery pays the whole cost of a reset — libfprint sees a
+disconnect and aborts the enrollment in progress — without getting the
+benefit, which would explain why a 5-stage enroll never completes.
+
+Not yet established: whether that stuck state is the same wedge described
+above. It was found already stuck, not observed entering, and the wedge
+proper requires successful captures first. Reproducing it from a
+known-good device is the next measurement.
+
 Also not yet done:
 - The "await finger" retry-loop timing (`FPC_RETRY_DELAY_MS`,
   `FPC_CAPTURE_COOLDOWN_MS`, the 3000ms read timeout in
