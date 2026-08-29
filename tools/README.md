@@ -56,9 +56,21 @@ fpc> note finger down, holding
 fpc> loop 10
 ```
 
-`loop` counts consecutive capture timeouts and reports which capture the
-sensor stopped answering on. Once it announces a wedge, the interesting
-question is what — if anything — still responds:
+`loop` counts consecutive capture timeouts, but a timeout is also the
+ordinary "waiting for a finger" state: the capture read simply does not
+return until a finger is on the sensor. So timeouts alone are not the wedge.
+The wedge is a sensor that answered captures and then stopped, which is why
+`loop` reports it only when at least one capture succeeded first; with none,
+it says so plainly instead.
+
+Get a single `cap` working before running a loop. And land the finger just
+after starting a capture rather than resting it there beforehand — a run
+where the finger was already down for the whole loop produced six timeouts
+and zero captures, with the soft reset replying cleanly in 0.25ms before
+every one of them.
+
+Once it does announce a wedge, the interesting question is what — if
+anything — still responds:
 
 ```
 fpc> cmd 0001      # does Get Chip ID still answer while wedged?

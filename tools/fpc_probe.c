@@ -152,14 +152,31 @@ static void cmd_loop(int n, int delay_ms) {
                 break;
         }
 
-        if (wedged_at < 0 && consecutive_timeouts >= WEDGE_TIMEOUT_THRESHOLD) {
-            wedged_at = i - consecutive_timeouts + 1;
-            fpc_trace_event("wedge", "%d consecutive timeouts; first was capture #%d",
-                            consecutive_timeouts, wedged_at);
-            printf("\n*** wedged: stopped answering at capture #%d "
-                   "(%d captures succeeded first)\n", wedged_at, ok);
-            puts("*** try 'cmd 0001' to see if anything still answers, "
-                 "then 'usbreset' to recover\n");
+        /* A capture timeout is also the ordinary "waiting for a finger" state,
+         * so timeouts alone do not mean the sensor has wedged. The wedge is a
+         * sensor that answered captures and then stopped; with no capture ever
+         * having succeeded, the far likelier reading is that no finger was
+         * seen. Reporting the second as the first sends the investigation
+         * after a bug that isn't there. */
+        if (consecutive_timeouts >= WEDGE_TIMEOUT_THRESHOLD) {
+            if (ok > 0) {
+                wedged_at = i - consecutive_timeouts + 1;
+                fpc_trace_event("wedge", "%d consecutive timeouts after %d successful "
+                                "captures; first timeout was capture #%d",
+                                consecutive_timeouts, ok, wedged_at);
+                printf("\n*** wedged: %d captures succeeded, then it stopped "
+                       "answering at capture #%d\n", ok, wedged_at);
+                puts("*** 'cmd 0001' and 'cmd 0008' to see what still answers, "
+                     "then 'usbreset' to recover\n");
+            } else {
+                fpc_trace_event("no_finger", "%d consecutive timeouts, no capture ever "
+                                "succeeded", consecutive_timeouts);
+                printf("\n*** no capture ever succeeded in %d attempts -- "
+                       "the sensor never saw a finger\n", i);
+                puts("*** this is not the wedge. Land the finger just after starting a\n"
+                     "*** capture rather than holding it down beforehand, and check\n"
+                     "*** that 'cap' works at all before running a loop.\n");
+            }
             break;
         }
 
