@@ -166,6 +166,28 @@ remove the zero-minutiae frames and the 2-minutia print now in the template,
 which is necessary but may not be sufficient, since the best sample seen is
 11.
 
+### `fprintd-identify` appears to hang
+
+It is not hanging on the driver. `fprintd-identify` keeps capturing until it
+recognises a finger, so while matching fails it never stops — and libfprint's
+thermal model then disables the device:
+
+```
+Updated temperature model ... FP_TEMPERATURE_HOT
+Device reported an error during verify: Device disabled to prevent overheating.
+verify_cb: result verify-disconnected
+```
+
+`DEFAULT_TEMP_HOT_SECONDS` is `3 * 60` in `fp-device-private.h`: three
+minutes of continuous activity disables any device, driver-independent.
+Cooling back to cold takes `DEFAULT_TEMP_COLD_SECONDS`, nine minutes —
+or restart `fprintd`, since the model is per-process state.
+
+While matching is unreliable, use `fprintd-verify`, which captures once and
+reports, rather than `fprintd-identify`, which loops. The same session
+confirmed the drain still doing its job under a long run:
+`drained 413 stale packet(s) before capture`.
+
 Also not yet done:
 - The "await finger" retry-loop timing (`FPC_RETRY_DELAY_MS`,
   `FPC_CAPTURE_COOLDOWN_MS`, the 3000ms read timeout in
