@@ -29,6 +29,8 @@
 
 #define FP_COMPONENT "fpc1021"
 
+#include <math.h>
+
 #include "drivers_api.h"
 
 /* Interface 1 of the composite USB device is the fingerprint sensor;
@@ -73,11 +75,21 @@
  * against a threshold of 24, weaker even than the 9 aes3k settles for. 3 is
  * the next step up, and what aes4000 uses. Offline the extra factor cuts
  * both ways (one sample 9 -> 18 minutiae, another 12 -> 2), so this is
- * worth keeping only if the scores say so. Measured: 2 -> best score 6,
- * 3 -> 12, 4 -> 12 with markedly more zero scores, so 3 is where the curve
- * flattens and past it interpolation starts inventing minutiae that do not
- * correspond between captures. See ../libfprint-driver/README.md. */
-#define FPC_ENLARGE_FACTOR 3
+ * worth keeping only if the scores say so, and they say 2.
+ *
+ * Measured with tools/fpc_bench.c over ten saved captures, varying only this
+ * factor: 1 -> best score 0, 2 -> 15, 3 -> 10, 4 -> 0. An earlier live
+ * comparison appeared to favour 3, but it re-enrolled and re-pressed between
+ * factors, so it compared conditions as much as factors.
+ *
+ * Past 2 the count keeps rising while correspondence collapses: three
+ * captures of one finger that was never lifted yield 11/20/23 minutiae at 2x
+ * and score 6, 7, 15 against each other, but 4/21/41 at 3x and score zero.
+ * Enlargement buys resolution for NBIS's fixed 8px block grid; beyond that it
+ * amplifies sensor noise into minutiae that differ between two images of the
+ * same finger, which is worse than having too few.
+ * See ../libfprint-driver/README.md. */
+#define FPC_ENLARGE_FACTOR 2
 
 /* Frame quality gate. The sensor happily returns blank frames -- all-white
  * or all-black -- and handing one to libfprint puts a useless print in the
@@ -338,6 +350,136 @@ enum capture_states {
   CAPTURE_NUM_STATES,
 };
 
+/* Unsharp mask, applied to the raw frame before enlargement.
+ *
+ * The sensor's ridges are soft-edged, and every later stage -- interpolation,
+ * NBIS's block analysis -- loses more of that edge. Sharpening first is what
+ * lets a verification image carry enough minutiae to be compared at all:
+ * measured over ten saved captures (tools/fpc_bench.c), real frames go from
+ * 8-11 minutiae to 13-148, so none of them fall under
+ * MIN_COMPUTABLE_BOZORTH_MINUTIAE any more, and the share of captures that
+ * match another capture of the same finger goes from 2 in 11 to 5 in 11.
+ *
+ * That asymmetry is the point: enrollment retries until a stage is accepted,
+ * so it quietly selects good frames, while a verification is scored on
+ * whatever arrives. Sharpening raises the floor for the verification.
+ *
+ * sigma 1.5 with amount 2.5 was the best of a grid over both, and sits on a
+ * plateau rather than a spike; past sigma 2.0 the score collapses, which is
+ * the mechanism showing itself -- blur too much before sharpening and there
+ * is nothing left to sharpen.
+ */
+#define FPC_UNSHARP_SIGMA 1.5
+#define FPC_UNSHARP_AMOUNT 2.5
+/* Kernel half-width, tied to sigma so the Gaussian is not silently
+ * truncated -- 3 sigma is where it has effectively died out. */
+#define FPC_UNSHARP_RADIUS ((gint) ceil (3.0 * FPC_UNSHARP_SIGMA))
+
+static void
+fpc_unsharp (guint8 *buf, gint width, gint height)
+{
+  const gint r = FPC_UNSHARP_RADIUS;
+  gdouble kernel[2 * FPC_UNSHARP_RADIUS + 1];
+  gdouble sum = 0.0;
+  g_autofree gdouble *tmp = g_new (gdouble, (gsize) width * height);
+  g_autofree gdouble *blur = g_new (gdouble, (gsize) width * height);
+
+  for (gint i = -r; i <= r; i++)
+    {
+      kernel[i + r] = exp (-(i * i) / (2.0 * FPC_UNSHARP_SIGMA * FPC_UNSHARP_SIGMA));
+      sum += kernel[i + r];
+    }
+  for (gint i = 0; i < 2 * r + 1; i++)
+    kernel[i] /= sum;
+
+  /* Separable Gaussian: horizontal, then vertical. */
+  for (gint y = 0; y < height; y++)
+    for (gint x = 0; x < width; x++)
+      {
+        gdouble acc = 0.0;
+        for (gint i = -r; i <= r; i++)
+          acc += kernel[i + r] * buf[y * width + CLAMP (x + i, 0, width - 1)];
+        tmp[y * width + x] = acc;
+      }
+
+  for (gint y = 0; y < height; y++)
+    for (gint x = 0; x < width; x++)
+      {
+        gdouble acc = 0.0;
+        for (gint i = -r; i <= r; i++)
+          acc += kernel[i + r] * tmp[CLAMP (y + i, 0, height - 1) * width + x];
+        blur[y * width + x] = acc;
+      }
+
+  for (gsize i = 0; i < (gsize) width * height; i++)
+    {
+      gdouble sharpened = buf[i] + FPC_UNSHARP_AMOUNT * (buf[i] - blur[i]);
+      buf[i] = (guint8) CLAMP ((gint) (sharpened + 0.5), 0, 255);
+    }
+}
+
+/* Catmull-Rom bicubic upscale.
+ *
+ * libfprint's fpi_image_resize() interpolates bilinearly, which softens
+ * ridge edges just where NBIS is looking for them. Measured over ten saved
+ * captures (tools/fpc_bench.c), swapping bilinear for Catmull-Rom at the
+ * same 2x raises the best match score from 15 to 25 and is the only
+ * configuration tried that puts any pair at or above the threshold of 24.
+ * Catmull-Rom is the natural choice here: it is the interpolating cubic, so
+ * it passes through the original samples rather than blurring them, and its
+ * slight overshoot at an edge sharpens ridge boundaries instead of rounding
+ * them off.
+ */
+static inline gdouble
+fpc_cubic (gdouble a, gdouble b, gdouble c, gdouble d, gdouble t)
+{
+  const gdouble p = -0.5 * a + 1.5 * b - 1.5 * c + 0.5 * d;
+  const gdouble q = a - 2.5 * b + 2.0 * c - 0.5 * d;
+  const gdouble r = -0.5 * a + 0.5 * c;
+
+  return ((p * t + q) * t + r) * t + b;
+}
+
+static inline guint8
+fpc_sample (const guint8 *src, gint w, gint h, gint x, gint y)
+{
+  x = CLAMP (x, 0, w - 1);
+  y = CLAMP (y, 0, h - 1);
+  return src[y * w + x];
+}
+
+static void
+fpc_resize_catrom (const guint8 *src, gint sw, gint sh, gint factor, guint8 *dst)
+{
+  const gint dw = sw * factor;
+  const gint dh = sh * factor;
+
+  for (gint dy = 0; dy < dh; dy++)
+    {
+      const gdouble sy = (dy + 0.5) / factor - 0.5;
+      const gint iy = (gint) floor (sy);
+      const gdouble ty = sy - iy;
+
+      for (gint dx = 0; dx < dw; dx++)
+        {
+          const gdouble sx = (dx + 0.5) / factor - 0.5;
+          const gint ix = (gint) floor (sx);
+          const gdouble tx = sx - ix;
+          gdouble col[4];
+
+          for (gint k = 0; k < 4; k++)
+            col[k] = fpc_cubic (fpc_sample (src, sw, sh, ix - 1, iy - 1 + k),
+                                fpc_sample (src, sw, sh, ix + 0, iy - 1 + k),
+                                fpc_sample (src, sw, sh, ix + 1, iy - 1 + k),
+                                fpc_sample (src, sw, sh, ix + 2, iy - 1 + k),
+                                tx);
+
+          gdouble v = fpc_cubic (col[0], col[1], col[2], col[3], ty);
+          dst[dy * dw + dx] = (guint8) CLAMP ((gint) (v + 0.5), 0, 255);
+        }
+    }
+}
+
 /* Mean per-tile contrast, the frame-quality proxy described above. */
 static gdouble
 fpc_frame_contrast (const guint8 *buf, gint width, gint height)
@@ -373,7 +515,6 @@ deliver_image (FpDevice *dev)
 {
   FpiDeviceFpc1021 *self = FPI_DEVICE_FPC1021 (dev);
   FpImageDevice *idev = FP_IMAGE_DEVICE (dev);
-  FpImage *img = fp_image_new (self->width, self->height);
   FpImage *enlarged;
   gdouble contrast;
 
@@ -382,17 +523,21 @@ deliver_image (FpDevice *dev)
     {
       fp_dbg ("fpc1021: rejecting blank frame (tile contrast %.1f < %.1f)",
               contrast, FPC_MIN_TILE_CONTRAST);
-      g_object_unref (img);
       g_clear_pointer (&self->image_buf, g_free);
       fpi_image_device_retry_scan (idev, FP_DEVICE_RETRY_GENERAL);
       fpi_image_device_report_finger_status (idev, FALSE);
       return;
     }
 
-  memcpy (img->data, self->image_buf, self->image_len);
+  /* Sharpen the raw frame before it is enlarged; the gate above deliberately
+   * ran on the unsharpened frame, where a blank frame is unambiguous and
+   * where the threshold was calibrated. */
+  fpc_unsharp (self->image_buf, self->width, self->height);
 
-  enlarged = fpi_image_resize (img, FPC_ENLARGE_FACTOR, FPC_ENLARGE_FACTOR);
-  g_object_unref (img);
+  enlarged = fp_image_new (self->width * FPC_ENLARGE_FACTOR,
+                           self->height * FPC_ENLARGE_FACTOR);
+  fpc_resize_catrom (self->image_buf, self->width, self->height,
+                     FPC_ENLARGE_FACTOR, enlarged->data);
 
   /* Scan resolution, used by NBIS to size the neighbourhood it scores each
    * minutia's reliability over (RADIUS_MM * ppmm in mindtct/quality.c).

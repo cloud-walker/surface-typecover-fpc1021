@@ -125,6 +125,61 @@ as the same failed read. At URB level they are three different pictures, and
 three different bugs. `status=-115` is `-EINPROGRESS`, the normal marker on a
 submit; a completion carries the real status.
 
+## Offline matching bench: `fpc_bench.c`
+
+Every matching question used to cost a `fprintd-delete`, a six-press
+enrollment and several verifications — with a real finger — for one noisy
+data point, and comparisons made that way vary conditions as much as the
+thing under test. `fpc_bench` replays saved raw captures through the driver's
+own pipeline instead: enlargement, scan resolution, blank-frame gate, then
+libfprint's `fpi_print_add_from_image()` and the same bozorth3 entry point
+`fpi_print_bz3_match()` calls. The scores are the ones fprintd would report.
+
+```
+$ fpc_bench -e 2 shot1.bin shot2.bin shot3.bin
+enlarge 2x  ->  320x320      threshold 24      blank gate 40
+
+capture           contrast minutiae
+shot1.bin             77.7       11
+shot2.bin            235.2       20
+shot3.bin            206.8       23
+
+scores (row = probe, column = gallery)
+                     0     1     2
+ 0 shot1.bin         .     6     7
+ 1 shot2.bin         6     .    15
+ 2 shot3.bin         7    15     .
+
+over 6 ungated pairs:  best 15   mean 9.3   at or above 24: 0 (0%)
+```
+
+Options: `-e` enlargement factor, `-t` threshold, `-g` blank-frame gate
+(0 disables), `-w`/`-h` capture dimensions.
+
+It found, in seconds, that the 3x enlargement chosen from live testing was
+worse than 2x — see `../libfprint-driver/README.md`.
+
+### Building it
+
+Nothing `fpi_*` is exported from the shared library, so this links against a
+libfprint **build tree**'s static archives:
+
+```sh
+SRC=/path/to/libfprint          # source checkout
+B=$SRC/build                    # its meson build directory
+PKGS="glib-2.0 gobject-2.0 gio-2.0 gmodule-2.0 gusb json-glib-1.0 pixman-1 gudev-1.0 openssl"
+
+cc -O2 -Wall -std=gnu11 tools/fpc_bench.c -o build/fpc_bench \
+  -I"$SRC/libfprint" -I"$SRC" -I"$B" -I"$B/libfprint" \
+  -I"$SRC/libfprint/nbis/include" -I"$SRC/libfprint/nbis/libfprint-include" \
+  $(pkg-config --cflags $PKGS) \
+  "$B/libfprint/libfprint-private.a" "$B/libfprint/libnbis.a" \
+  -L"$B/libfprint" -lfprint-2 -Wl,-rpath,"$B/libfprint" \
+  $(pkg-config --libs $PKGS) -lm
+```
+
+Collect samples with `sudo ./build/fpc_capture shot1.bin`, one per press.
+
 ## Trace format
 
 Every transfer is recorded on both sinks: a human-readable line on stderr,

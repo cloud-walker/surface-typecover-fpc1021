@@ -171,22 +171,158 @@ which is necessary but may not be sufficient, since the best sample seen is
 | factor | delivered | best bozorth3 score |
 |---|---|---|
 | 1x | 160x160 | 0 — under MIN_COMPUTABLE_BOZORTH_MINUTIAE, never computed |
-| 2x | 320x320 | 6 |
-| 3x | 480x480 | **12** |
-| 4x | 640x640 | 12, with markedly more zeros (26 of 30 vs 18 of 25) |
+| **2x** | 320x320 | **15** |
+| 3x | 480x480 | 10 |
+| 4x | 640x640 | 0 |
 
 Threshold is 24; `aes3k` settles for 9. At 3x the distribution over 25
 comparisons was `0 x18, 3 x3, 6 x1, 9 x1, 11 x1, 12 x1` — three would clear
 aes3k's bar, none clear ours.
 
-**The curve flattens at 3x**, which is also what `aes4000` uses for its 96x96
-sensor. 4x returns the same best score with far more zero scores: past that
-point interpolation is inventing minutiae that do not correspond between two
-captures of the same finger, which is exactly the failure this lever was
-meant to avoid. Minutiae scanning stays cheap throughout (0.049s at 640x640),
-so cost is not what limits it.
+**2x is the optimum**, and the numbers above supersede an earlier live
+comparison that appeared to favour 3x. That comparison re-enrolled and
+re-pressed the finger between factors, so it varied conditions as much as
+factors; these come from `tools/fpc_bench.c` replaying the same ten saved
+captures through the same pipeline, with only the factor changing.
 
-Enlargement is therefore spent as a lever, at roughly half the score needed.
+What goes wrong past 2x is visible on three captures of a finger that was
+never lifted between them:
+
+| factor | minutiae | scores against each other |
+|---|---|---|
+| 1x | 8, 8, 8 | all 0 (under the floor) |
+| **2x** | 11, 20, 23 | **6, 7, 15** |
+| 3x | 4, 21, 41 | all 0 |
+| 4x | 17, 7, 20 | all 0 |
+
+At 1x the counts are stable but too low. At 2x they clear the floor and stay
+consistent. Past that the count keeps climbing while consistency collapses —
+4 against 41 minutiae from near-identical images — because interpolation is
+amplifying sensor noise into minutiae that differ between two views of the
+same finger. More minutiae that do not correspond is worse than fewer that
+do, which is why counting minutiae was the wrong measurement all along.
+
+Enlargement alone is spent as a lever at 15 — but the *interpolation* is not.
+
+### Interpolation: Catmull-Rom instead of bilinear
+
+`fpi_image_resize()` interpolates bilinearly, which softens ridge edges
+exactly where NBIS looks for them. Swapping the filter at the same 2x, over
+the same ten captures:
+
+| filter | best | mean | pairs at or above 24 |
+|---|---|---|---|
+| bilinear (`fpi_image_resize`) | 15 | 4.0 | 0 |
+| Point / nearest | 15 | 3.1 | 0 |
+| Mitchell | 20 | 2.7 | 0 |
+| Lanczos | 22 | 2.7 | 0 |
+| **Catmull-Rom** | **25** | 2.8 | **2** |
+
+Catmull-Rom is the only configuration tried that puts any pair at or above
+the threshold — the first genuine matches this driver has produced. It is
+also the principled choice: it is the interpolating cubic, so it passes
+through the original samples rather than averaging them away, and its slight
+overshoot at an edge sharpens a ridge boundary instead of rounding it off.
+
+Larger targets do not help with it either — Catmull-Rom at 400px scores 9 and
+at 480px scores 11, against 25 at 320px — which is the same 2x optimum found
+above, now confirmed under a second filter.
+
+The driver carries its own `fpc_resize_catrom()` rather than calling
+`fpi_image_resize()`. Making the shared helper offer a sharper filter would
+be the better fix, and is worth proposing upstream.
+
+### Sharpening before enlargement
+
+A user observation pointed at this one: `fprintd-verify` returned no-match
+*instantly*, as though nothing were really being compared. It wasn't. The
+enrolled template was healthy — 35, 51, 29, 65 and 24 minutiae, all five
+clear of the floor — so the short-circuit had to be on the other side: the
+verification image was landing under 10 minutiae, and bozorth3 was returning
+zero without comparing anything.
+
+That asymmetry has a cause. **Enrollment quietly selects good frames** — a
+stage only passes if libfprint accepts the image, so poor ones are retried —
+while a verification is scored on whatever arrives. The verification image is
+the one that needs help.
+
+An unsharp mask on the raw frame, before enlargement, provides it. Real
+frames go from 8–11 minutiae to 13–148, so none fall under the floor any
+more, and the share of captures that match another capture of the same finger
+roughly triples:
+
+| configuration | captures matching another | mean best score per capture |
+|---|---|---|
+| enlargement only | 2 of 11 | 7.0 |
+| + unsharp (sigma 1.5, amount 2.5) | **6 of 11** | **17.4** |
+
+The parameters come from a grid over both, and sit on a plateau rather than a
+spike. Past sigma 2.0 the score collapses to 0–2 of 11, which is the
+mechanism showing itself: blur too much before sharpening and there is
+nothing left to sharpen.
+
+The gate still runs on the *unsharpened* frame, where a blank frame is
+unambiguous and where its threshold was calibrated.
+
+Ten samples is a small dataset and the optimum is loosely determined; the
+plateau is the reassuring part, not the peak.
+
+On the device, this removed the short-circuit entirely. Twenty comparisons
+across several verifications, before and after:
+
+```
+before:  0 x20
+after :  7 x3   9 x1   10 x4   11 x3   12 x3   13 x3   15 x1   17 x1   20 x1
+```
+
+Every comparison now produces a real score, and the best is 20 against a
+threshold of 24.
+
+### The threshold question, and the measurement it needs
+
+With genuine scores clustering between 7 and 20, a threshold of 24 rejects
+everything, and `aes3k` settles for 9. But lowering it is a security decision,
+not a tuning one, and it cannot be made from genuine scores alone: what
+matters is the *separation* between a genuine comparison and an impostor.
+
+**That measurement has now been taken, and the answer is the unwelcome one.**
+Captures of a second finger, scored against the first through
+`tools/fpc_bench.c`:
+
+| configuration | genuine | impostor | d' |
+|---|---|---|---|
+| 2x, no sharpening | 4.0 | 4.9 | -0.14 |
+| 2x + unsharp 1.0/1.0 | 10.2 | 9.1 | +0.13 |
+| **2x + unsharp 1.5/2.5 (shipped)** | **14.4** | **11.8** | **+0.26** |
+| 2x + unsharp 1.0/3.0 | 14.9 | 17.4 | -0.22 |
+| 3x + unsharp 1.5/2.5 | 8.1 | 12.7 | -0.54 |
+
+The shipped configuration is the best of those tried and does separate the
+two fingers — but barely. At its best operating point, a threshold of 16, it
+would accept 45% of genuine attempts and **14% of a stranger's finger**. A
+d' of 0.26 is nothing: usable biometrics sit above 3.
+
+**No threshold makes this safe**, and `bz3_threshold` should stay at 24 —
+which in practice means verification rejects everything, and that is the
+honest state of it.
+
+Note what this exposes about the tuning above: every image-processing
+parameter here was chosen by maximising *genuine* scores, with impostor
+scores never measured. That optimises the wrong objective — raising all
+scores together looks like progress and is not. The separation column is the
+one that matters, and it should gate any future change to this pipeline.
+
+Caveat: only two impostor captures were usable, so the impostor side rests on
+28 pairs from two images. The margin would have to be very different, not
+slightly different, for the conclusion to change.
+
+### Where that leaves the driver
+
+Capture, the wedge fix, enrollment and the diagnostics are solid and worth
+upstreaming. Verification is not, and should be presented as such rather than
+propped up with a lowered threshold: this sensor's 8x8mm window, through
+NBIS, does not currently separate fingers well enough to authenticate
+anybody.
 
 ### `fprintd-identify` appears to hang
 
