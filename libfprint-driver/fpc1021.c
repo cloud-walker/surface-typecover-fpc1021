@@ -29,6 +29,8 @@
 
 #define FP_COMPONENT "fpc1021"
 
+#include <math.h>
+
 #include "drivers_api.h"
 
 /* Interface 1 of the composite USB device is the fingerprint sensor;
@@ -348,6 +350,68 @@ enum capture_states {
   CAPTURE_NUM_STATES,
 };
 
+/* Catmull-Rom bicubic upscale.
+ *
+ * libfprint's fpi_image_resize() interpolates bilinearly, which softens
+ * ridge edges just where NBIS is looking for them. Measured over ten saved
+ * captures (tools/fpc_bench.c), swapping bilinear for Catmull-Rom at the
+ * same 2x raises the best match score from 15 to 25 and is the only
+ * configuration tried that puts any pair at or above the threshold of 24.
+ * Catmull-Rom is the natural choice here: it is the interpolating cubic, so
+ * it passes through the original samples rather than blurring them, and its
+ * slight overshoot at an edge sharpens ridge boundaries instead of rounding
+ * them off.
+ */
+static inline gdouble
+fpc_cubic (gdouble a, gdouble b, gdouble c, gdouble d, gdouble t)
+{
+  const gdouble p = -0.5 * a + 1.5 * b - 1.5 * c + 0.5 * d;
+  const gdouble q = a - 2.5 * b + 2.0 * c - 0.5 * d;
+  const gdouble r = -0.5 * a + 0.5 * c;
+
+  return ((p * t + q) * t + r) * t + b;
+}
+
+static inline guint8
+fpc_sample (const guint8 *src, gint w, gint h, gint x, gint y)
+{
+  x = CLAMP (x, 0, w - 1);
+  y = CLAMP (y, 0, h - 1);
+  return src[y * w + x];
+}
+
+static void
+fpc_resize_catrom (const guint8 *src, gint sw, gint sh, gint factor, guint8 *dst)
+{
+  const gint dw = sw * factor;
+  const gint dh = sh * factor;
+
+  for (gint dy = 0; dy < dh; dy++)
+    {
+      const gdouble sy = (dy + 0.5) / factor - 0.5;
+      const gint iy = (gint) floor (sy);
+      const gdouble ty = sy - iy;
+
+      for (gint dx = 0; dx < dw; dx++)
+        {
+          const gdouble sx = (dx + 0.5) / factor - 0.5;
+          const gint ix = (gint) floor (sx);
+          const gdouble tx = sx - ix;
+          gdouble col[4];
+
+          for (gint k = 0; k < 4; k++)
+            col[k] = fpc_cubic (fpc_sample (src, sw, sh, ix - 1, iy - 1 + k),
+                                fpc_sample (src, sw, sh, ix + 0, iy - 1 + k),
+                                fpc_sample (src, sw, sh, ix + 1, iy - 1 + k),
+                                fpc_sample (src, sw, sh, ix + 2, iy - 1 + k),
+                                tx);
+
+          gdouble v = fpc_cubic (col[0], col[1], col[2], col[3], ty);
+          dst[dy * dw + dx] = (guint8) CLAMP ((gint) (v + 0.5), 0, 255);
+        }
+    }
+}
+
 /* Mean per-tile contrast, the frame-quality proxy described above. */
 static gdouble
 fpc_frame_contrast (const guint8 *buf, gint width, gint height)
@@ -383,7 +447,6 @@ deliver_image (FpDevice *dev)
 {
   FpiDeviceFpc1021 *self = FPI_DEVICE_FPC1021 (dev);
   FpImageDevice *idev = FP_IMAGE_DEVICE (dev);
-  FpImage *img = fp_image_new (self->width, self->height);
   FpImage *enlarged;
   gdouble contrast;
 
@@ -392,17 +455,16 @@ deliver_image (FpDevice *dev)
     {
       fp_dbg ("fpc1021: rejecting blank frame (tile contrast %.1f < %.1f)",
               contrast, FPC_MIN_TILE_CONTRAST);
-      g_object_unref (img);
       g_clear_pointer (&self->image_buf, g_free);
       fpi_image_device_retry_scan (idev, FP_DEVICE_RETRY_GENERAL);
       fpi_image_device_report_finger_status (idev, FALSE);
       return;
     }
 
-  memcpy (img->data, self->image_buf, self->image_len);
-
-  enlarged = fpi_image_resize (img, FPC_ENLARGE_FACTOR, FPC_ENLARGE_FACTOR);
-  g_object_unref (img);
+  enlarged = fp_image_new (self->width * FPC_ENLARGE_FACTOR,
+                           self->height * FPC_ENLARGE_FACTOR);
+  fpc_resize_catrom (self->image_buf, self->width, self->height,
+                     FPC_ENLARGE_FACTOR, enlarged->data);
 
   /* Scan resolution, used by NBIS to size the neighbourhood it scores each
    * minutia's reliability over (RADIUS_MM * ppmm in mindtct/quality.c).

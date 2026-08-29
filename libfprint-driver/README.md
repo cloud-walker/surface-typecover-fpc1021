@@ -202,7 +202,35 @@ amplifying sensor noise into minutiae that differ between two views of the
 same finger. More minutiae that do not correspond is worse than fewer that
 do, which is why counting minutiae was the wrong measurement all along.
 
-Enlargement is spent as a lever at 15, still short of the threshold of 24.
+Enlargement alone is spent as a lever at 15 — but the *interpolation* is not.
+
+### Interpolation: Catmull-Rom instead of bilinear
+
+`fpi_image_resize()` interpolates bilinearly, which softens ridge edges
+exactly where NBIS looks for them. Swapping the filter at the same 2x, over
+the same ten captures:
+
+| filter | best | mean | pairs at or above 24 |
+|---|---|---|---|
+| bilinear (`fpi_image_resize`) | 15 | 4.0 | 0 |
+| Point / nearest | 15 | 3.1 | 0 |
+| Mitchell | 20 | 2.7 | 0 |
+| Lanczos | 22 | 2.7 | 0 |
+| **Catmull-Rom** | **25** | 2.8 | **2** |
+
+Catmull-Rom is the only configuration tried that puts any pair at or above
+the threshold — the first genuine matches this driver has produced. It is
+also the principled choice: it is the interpolating cubic, so it passes
+through the original samples rather than averaging them away, and its slight
+overshoot at an edge sharpens a ridge boundary instead of rounding it off.
+
+Larger targets do not help with it either — Catmull-Rom at 400px scores 9 and
+at 480px scores 11, against 25 at 320px — which is the same 2x optimum found
+above, now confirmed under a second filter.
+
+The driver carries its own `fpc_resize_catrom()` rather than calling
+`fpi_image_resize()`. Making the shared helper offer a sharper filter would
+be the better fix, and is worth proposing upstream.
 
 ### `fprintd-identify` appears to hang
 
