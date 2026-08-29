@@ -115,6 +115,101 @@ The real lever is likely upstream of all this: 11 minutiae is thin, bozorth3
 needs overlap between two sets, and nothing currently stops a poor frame
 entering the template. That is the image-quality gating below.
 
+### Why verification returns no match: the bozorth3 floor
+
+`fprintd-verify` fails with `score 0/24` on **every** comparison — 25 of 25
+across five attempts, never a low score, always exactly zero. The reason is
+in `nbis/include/bozorth.h`:
+
+```c
+#define MIN_COMPUTABLE_BOZORTH_MINUTIAE 10
+```
+
+`bz_match_score()` returns `ZERO_MATCH_SCORE` without attempting a
+comparison if *either* side has fewer than 10 minutiae. The stored template
+holds five prints with 7, 5, 8, 2 and 7 minutiae; a verification image
+carries about 8. Every comparison is short-circuited before matching starts.
+
+So `bz3_threshold` is irrelevant here — the score is never computed — and
+this is not a question of poor overlap between prints. The sensor simply
+does not clear the floor.
+
+Measured minutiae per capture, ten samples (`tools/fpc_minutiae.c`):
+
+```
+11, 8, 8, 8, 8, 7, 0, 0, 0     one of ten reaches 10
+```
+
+Three placements yielded *no* minutiae at all. Three captures of one
+unmoved finger gave 8, 8, 8 with positions stable to within a few pixels,
+so extraction is repeatable and these are real features, not noise — there
+are just very few of them. 160x160 at 508 dpi is 8x8mm, and ~8 minutiae is
+about what that area of a finger holds.
+
+Ruled out along the way: contrast processing (normalize, equalize,
+auto-level all leave the count unchanged) and a resolution mismatch — the
+ridge period measures 10px, i.e. 0.50mm at 508dpi, which is the normal human
+value and confirms both the scale NBIS assumes and the `ppmm` set above.
+
+Upscaling, as `elanspi.c` does with `fpi_image_resize (img, 2, 2)`, changes
+counts wildly and inconsistently: one image went 7 -> 67 minutiae at 2x,
+another 11 -> 2 at 3x. Interpolation cannot add information, so most of that
+is likely spurious. **Counting minutiae is the wrong measurement** — false
+minutiae inflate the count and hurt matching. What matters is whether two
+captures of the same finger score against each other, and that needs an
+offline matching harness (libfprint's `virtual-image` driver, not currently
+built here) rather than an enroll/verify cycle against a real finger.
+
+Where this leaves the driver: capture and enrollment work; verification
+cannot until captures reliably clear 10 minutiae. Image-quality gating would
+remove the zero-minutiae frames and the 2-minutia print now in the template,
+which is necessary but may not be sufficient, since the best sample seen is
+11.
+
+### Enlargement vs match score, measured
+
+| factor | delivered | best bozorth3 score |
+|---|---|---|
+| 1x | 160x160 | 0 — under MIN_COMPUTABLE_BOZORTH_MINUTIAE, never computed |
+| 2x | 320x320 | 6 |
+| 3x | 480x480 | **12** |
+| 4x | 640x640 | 12, with markedly more zeros (26 of 30 vs 18 of 25) |
+
+Threshold is 24; `aes3k` settles for 9. At 3x the distribution over 25
+comparisons was `0 x18, 3 x3, 6 x1, 9 x1, 11 x1, 12 x1` — three would clear
+aes3k's bar, none clear ours.
+
+**The curve flattens at 3x**, which is also what `aes4000` uses for its 96x96
+sensor. 4x returns the same best score with far more zero scores: past that
+point interpolation is inventing minutiae that do not correspond between two
+captures of the same finger, which is exactly the failure this lever was
+meant to avoid. Minutiae scanning stays cheap throughout (0.049s at 640x640),
+so cost is not what limits it.
+
+Enlargement is therefore spent as a lever, at roughly half the score needed.
+
+### `fprintd-identify` appears to hang
+
+It is not hanging on the driver. `fprintd-identify` keeps capturing until it
+recognises a finger, so while matching fails it never stops — and libfprint's
+thermal model then disables the device:
+
+```
+Updated temperature model ... FP_TEMPERATURE_HOT
+Device reported an error during verify: Device disabled to prevent overheating.
+verify_cb: result verify-disconnected
+```
+
+`DEFAULT_TEMP_HOT_SECONDS` is `3 * 60` in `fp-device-private.h`: three
+minutes of continuous activity disables any device, driver-independent.
+Cooling back to cold takes `DEFAULT_TEMP_COLD_SECONDS`, nine minutes —
+or restart `fprintd`, since the model is per-process state.
+
+While matching is unreliable, use `fprintd-verify`, which captures once and
+reports, rather than `fprintd-identify`, which loops. The same session
+confirmed the drain still doing its job under a long run:
+`drained 413 stale packet(s) before capture`.
+
 Also not yet done:
 - The "await finger" retry-loop timing (`FPC_RETRY_DELAY_MS`,
   `FPC_CAPTURE_COOLDOWN_MS`, the 3000ms read timeout in

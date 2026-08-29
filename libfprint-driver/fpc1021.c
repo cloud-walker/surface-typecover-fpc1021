@@ -59,6 +59,44 @@
  * 412 stream packets, so the cap is set above that with room to spare; the
  * timeout only has to be long enough for a packet that is already queued to
  * come back, not for the sensor to produce anything. */
+/* NBIS's block-based minutiae detector works on a fixed 8px grid, so on a
+ * small sensor the ridge structure is averaged away before it can be seen.
+ * libfprint's other small square press sensors enlarge before handing the
+ * image over -- aes4000 (96x96) by 3, aes3500 (128x128) by 2, both with the
+ * comment that it is "to make the image big enough for NBIS to process
+ * reliably". At 160x160 this sensor is the largest of the three, so 2 puts
+ * it at 320x320 and 3 at 480x480, both in the range those two deliver.
+ *
+ * Detection below MIN_COMPUTABLE_BOZORTH_MINUTIAE (10) is what made every
+ * comparison score exactly 0. At 2 the floor was cleared and bozorth3
+ * started producing real scores for the first time -- but only 3 and 6
+ * against a threshold of 24, weaker even than the 9 aes3k settles for. 3 is
+ * the next step up, and what aes4000 uses. Offline the extra factor cuts
+ * both ways (one sample 9 -> 18 minutiae, another 12 -> 2), so this is
+ * worth keeping only if the scores say so. Measured: 2 -> best score 6,
+ * 3 -> 12, 4 -> 12 with markedly more zero scores, so 3 is where the curve
+ * flattens and past it interpolation starts inventing minutiae that do not
+ * correspond between captures. See ../libfprint-driver/README.md. */
+#define FPC_ENLARGE_FACTOR 3
+
+/* Frame quality gate. The sensor happily returns blank frames -- all-white
+ * or all-black -- and handing one to libfprint puts a useless print in the
+ * enrolled template and wastes a verification attempt. The Windows driver
+ * classifies each frame by a block-based contrast analysis before accepting
+ * it; this is the same idea, calibrated on ten real captures:
+ *
+ *   mean per-tile (max - min) over 16x16 tiles
+ *     blank white / blank black frames :   3.4 .. 17.7
+ *     frames carrying a real print     :  77.7 .. 235.2
+ *
+ * The gap is wide enough that the exact threshold hardly matters; 40 sits
+ * well clear of both sides. This only rejects frames that are unusable, not
+ * merely poor -- two real captures scoring 80-88 yielded 9 minutiae, just
+ * under what bozorth3 can work with, and are deliberately still accepted
+ * rather than second-guessed here. */
+#define FPC_QUALITY_TILE 16
+#define FPC_MIN_TILE_CONTRAST 40.0
+
 #define FPC_DRAIN_TIMEOUT_MS 50
 #define FPC_DRAIN_MAX_PACKETS 512
 #define FPC_CAPTURE_COOLDOWN_MS 3000
@@ -300,15 +338,72 @@ enum capture_states {
   CAPTURE_NUM_STATES,
 };
 
+/* Mean per-tile contrast, the frame-quality proxy described above. */
+static gdouble
+fpc_frame_contrast (const guint8 *buf, gint width, gint height)
+{
+  gdouble total = 0.0;
+  guint tiles = 0;
+
+  for (gint ty = 0; ty + FPC_QUALITY_TILE <= height; ty += FPC_QUALITY_TILE)
+    {
+      for (gint tx = 0; tx + FPC_QUALITY_TILE <= width; tx += FPC_QUALITY_TILE)
+        {
+          guint8 lo = 255, hi = 0;
+
+          for (gint y = 0; y < FPC_QUALITY_TILE; y++)
+            {
+              const guint8 *row = buf + (ty + y) * width + tx;
+              for (gint x = 0; x < FPC_QUALITY_TILE; x++)
+                {
+                  if (row[x] < lo) lo = row[x];
+                  if (row[x] > hi) hi = row[x];
+                }
+            }
+          total += hi - lo;
+          tiles++;
+        }
+    }
+
+  return tiles ? total / tiles : 0.0;
+}
+
 static void
 deliver_image (FpDevice *dev)
 {
   FpiDeviceFpc1021 *self = FPI_DEVICE_FPC1021 (dev);
   FpImageDevice *idev = FP_IMAGE_DEVICE (dev);
   FpImage *img = fp_image_new (self->width, self->height);
+  FpImage *enlarged;
+  gdouble contrast;
+
+  contrast = fpc_frame_contrast (self->image_buf, self->width, self->height);
+  if (contrast < FPC_MIN_TILE_CONTRAST)
+    {
+      fp_dbg ("fpc1021: rejecting blank frame (tile contrast %.1f < %.1f)",
+              contrast, FPC_MIN_TILE_CONTRAST);
+      g_object_unref (img);
+      g_clear_pointer (&self->image_buf, g_free);
+      fpi_image_device_retry_scan (idev, FP_DEVICE_RETRY_GENERAL);
+      fpi_image_device_report_finger_status (idev, FALSE);
+      return;
+    }
 
   memcpy (img->data, self->image_buf, self->image_len);
-  fpi_image_device_image_captured (idev, img);
+
+  enlarged = fpi_image_resize (img, FPC_ENLARGE_FACTOR, FPC_ENLARGE_FACTOR);
+  g_object_unref (img);
+
+  /* Scan resolution, used by NBIS to size the neighbourhood it scores each
+   * minutia's reliability over (RADIUS_MM * ppmm in mindtct/quality.c).
+   * Left unset it is 0.0, collapsing that radius to zero pixels. The FPC
+   * capacitive family is specified at 508 dpi, and the ridge period measured
+   * on real captures is 10px = 0.50mm at that scale, which is the normal
+   * human value -- so 508 dpi is confirmed, not assumed. Scaled by the
+   * enlargement so the radius stays the same physical distance. */
+  enlarged->ppmm = (508.0 / 25.4) * FPC_ENLARGE_FACTOR;
+
+  fpi_image_device_image_captured (idev, enlarged);
   fpi_image_device_report_finger_status (idev, FALSE);
 
   g_clear_pointer (&self->image_buf, g_free);
