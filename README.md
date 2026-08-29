@@ -38,12 +38,11 @@ Microsoft's/Fingerprint Cards' driver are included in this repository.
 
 ## Trying it yourself
 
-Requires `gcc` and `libusb-1.0` development headers.
+Requires a C compiler and `libusb-1.0` development headers.
 
 ```sh
-cd src
-gcc -o fpc_capture fpc_capture.c -lusb-1.0
-sudo ./fpc_capture
+make
+sudo ./build/fpc_capture
 ```
 
 Place a finger on the sensor; it retries for a few seconds and then writes a
@@ -54,11 +53,33 @@ it with e.g.:
 magick -size 160x160 -depth 8 gray:capture.bin capture.png
 ```
 
+Pass `-v` to trace every USB transfer, and `-t trace.jsonl` to record one.
+
+## Diagnostics
+
+`build/fpc_probe` is an interactive probe over the protocol: send an
+arbitrary opcode, run captures back to back, annotate the timeline, reset the
+bus — with every transfer traced to stderr and to a JSONL file that two runs
+can be diffed against each other. It's the tool for the wedge bug that
+currently blocks enrollment.
+
+```sh
+sudo ./build/fpc_probe
+fpc> loop 10
+```
+
+See [`tools/README.md`](tools/README.md).
+
 ## Roadmap
 
 - [x] Reverse-engineer the wire protocol
 - [x] Validate against real hardware
 - [x] Port to a proper libfprint `FpImageDevice` driver
+- [x] Diagnostic tracing + interactive probe (`tools/`) for investigating
+      sensor behaviour over time
+- [ ] Root-cause the wedge: the sensor stops answering after a handful of
+      captures until a full USB reset, which aborts any in-progress
+      enrollment — the blocker before this driver is usable day to day
 - [ ] Image-quality / finger-presence checks (the Windows driver's logic for
       this has been identified but not yet ported — see `PROTOCOL.md`)
 - [ ] Tune the "await finger" retry/cooldown timing against extended real use

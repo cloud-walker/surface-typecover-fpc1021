@@ -36,7 +36,7 @@ before reading, or you will read the wrong command's reply.
 |---|---|---|---|
 | 0 | 2 | `status` | `0x1000 \| opcode`, i.e. it echoes which command this is acknowledging. Not a generic "ready/busy" flag. |
 | 2 | 2 | `substatus` | `0` = OK. Nonzero = error/reject. `5` has been observed as a transient "not ready yet" value — treat as retryable. |
-| 4 | 2 | `length` | Only present on replies longer than 4 bytes (e.g. capture). Total payload size to expect. |
+| 4 | 2 | *opcode-dependent* | Only present on replies longer than 4 bytes. Its meaning depends on the command being acknowledged: total payload size to expect on a Capture reply, the chip-ID word on a Get Chip ID reply. Decode it by `status`, not by the reply's size. |
 | 6+ | up to 58 | `payload` | First chunk of payload, if any. |
 
 A short (4-byte) reply is normal for commands with no payload (e.g. reset) —
