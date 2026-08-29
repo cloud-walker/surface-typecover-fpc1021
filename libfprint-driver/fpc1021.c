@@ -350,6 +350,74 @@ enum capture_states {
   CAPTURE_NUM_STATES,
 };
 
+/* Unsharp mask, applied to the raw frame before enlargement.
+ *
+ * The sensor's ridges are soft-edged, and every later stage -- interpolation,
+ * NBIS's block analysis -- loses more of that edge. Sharpening first is what
+ * lets a verification image carry enough minutiae to be compared at all:
+ * measured over ten saved captures (tools/fpc_bench.c), real frames go from
+ * 8-11 minutiae to 13-148, so none of them fall under
+ * MIN_COMPUTABLE_BOZORTH_MINUTIAE any more, and the share of captures that
+ * match another capture of the same finger goes from 2 in 11 to 5 in 11.
+ *
+ * That asymmetry is the point: enrollment retries until a stage is accepted,
+ * so it quietly selects good frames, while a verification is scored on
+ * whatever arrives. Sharpening raises the floor for the verification.
+ *
+ * sigma 1.5 with amount 2.5 was the best of a grid over both, and sits on a
+ * plateau rather than a spike; past sigma 2.0 the score collapses, which is
+ * the mechanism showing itself -- blur too much before sharpening and there
+ * is nothing left to sharpen.
+ */
+#define FPC_UNSHARP_SIGMA 1.5
+#define FPC_UNSHARP_AMOUNT 2.5
+/* Kernel half-width, tied to sigma so the Gaussian is not silently
+ * truncated -- 3 sigma is where it has effectively died out. */
+#define FPC_UNSHARP_RADIUS ((gint) ceil (3.0 * FPC_UNSHARP_SIGMA))
+
+static void
+fpc_unsharp (guint8 *buf, gint width, gint height)
+{
+  const gint r = FPC_UNSHARP_RADIUS;
+  gdouble kernel[2 * FPC_UNSHARP_RADIUS + 1];
+  gdouble sum = 0.0;
+  g_autofree gdouble *tmp = g_new (gdouble, (gsize) width * height);
+  g_autofree gdouble *blur = g_new (gdouble, (gsize) width * height);
+
+  for (gint i = -r; i <= r; i++)
+    {
+      kernel[i + r] = exp (-(i * i) / (2.0 * FPC_UNSHARP_SIGMA * FPC_UNSHARP_SIGMA));
+      sum += kernel[i + r];
+    }
+  for (gint i = 0; i < 2 * r + 1; i++)
+    kernel[i] /= sum;
+
+  /* Separable Gaussian: horizontal, then vertical. */
+  for (gint y = 0; y < height; y++)
+    for (gint x = 0; x < width; x++)
+      {
+        gdouble acc = 0.0;
+        for (gint i = -r; i <= r; i++)
+          acc += kernel[i + r] * buf[y * width + CLAMP (x + i, 0, width - 1)];
+        tmp[y * width + x] = acc;
+      }
+
+  for (gint y = 0; y < height; y++)
+    for (gint x = 0; x < width; x++)
+      {
+        gdouble acc = 0.0;
+        for (gint i = -r; i <= r; i++)
+          acc += kernel[i + r] * tmp[CLAMP (y + i, 0, height - 1) * width + x];
+        blur[y * width + x] = acc;
+      }
+
+  for (gsize i = 0; i < (gsize) width * height; i++)
+    {
+      gdouble sharpened = buf[i] + FPC_UNSHARP_AMOUNT * (buf[i] - blur[i]);
+      buf[i] = (guint8) CLAMP ((gint) (sharpened + 0.5), 0, 255);
+    }
+}
+
 /* Catmull-Rom bicubic upscale.
  *
  * libfprint's fpi_image_resize() interpolates bilinearly, which softens
@@ -460,6 +528,11 @@ deliver_image (FpDevice *dev)
       fpi_image_device_report_finger_status (idev, FALSE);
       return;
     }
+
+  /* Sharpen the raw frame before it is enlarged; the gate above deliberately
+   * ran on the unsharpened frame, where a blank frame is unambiguous and
+   * where the threshold was calibrated. */
+  fpc_unsharp (self->image_buf, self->width, self->height);
 
   enlarged = fp_image_new (self->width * FPC_ENLARGE_FACTOR,
                            self->height * FPC_ENLARGE_FACTOR);

@@ -232,6 +232,41 @@ The driver carries its own `fpc_resize_catrom()` rather than calling
 `fpi_image_resize()`. Making the shared helper offer a sharper filter would
 be the better fix, and is worth proposing upstream.
 
+### Sharpening before enlargement
+
+A user observation pointed at this one: `fprintd-verify` returned no-match
+*instantly*, as though nothing were really being compared. It wasn't. The
+enrolled template was healthy — 35, 51, 29, 65 and 24 minutiae, all five
+clear of the floor — so the short-circuit had to be on the other side: the
+verification image was landing under 10 minutiae, and bozorth3 was returning
+zero without comparing anything.
+
+That asymmetry has a cause. **Enrollment quietly selects good frames** — a
+stage only passes if libfprint accepts the image, so poor ones are retried —
+while a verification is scored on whatever arrives. The verification image is
+the one that needs help.
+
+An unsharp mask on the raw frame, before enlargement, provides it. Real
+frames go from 8–11 minutiae to 13–148, so none fall under the floor any
+more, and the share of captures that match another capture of the same finger
+roughly triples:
+
+| configuration | captures matching another | mean best score per capture |
+|---|---|---|
+| enlargement only | 2 of 11 | 7.0 |
+| + unsharp (sigma 1.5, amount 2.5) | **6 of 11** | **17.4** |
+
+The parameters come from a grid over both, and sit on a plateau rather than a
+spike. Past sigma 2.0 the score collapses to 0–2 of 11, which is the
+mechanism showing itself: blur too much before sharpening and there is
+nothing left to sharpen.
+
+The gate still runs on the *unsharpened* frame, where a blank frame is
+unambiguous and where its threshold was calibrated.
+
+Ten samples is a small dataset and the optimum is loosely determined; the
+plateau is the reassuring part, not the peak.
+
 ### `fprintd-identify` appears to hang
 
 It is not hanging on the driver. `fprintd-identify` keeps capturing until it

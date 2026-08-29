@@ -57,6 +57,76 @@ typedef struct {
   gboolean gated;        /* rejected by the blank-frame gate */
 } sample;
 
+/* Unsharp mask, applied to the raw frame before enlargement.
+ *
+ * The sensor's ridges are soft-edged, and every later stage -- interpolation,
+ * NBIS's block analysis -- loses more of that edge. Sharpening first is what
+ * lets a verification image carry enough minutiae to be compared at all:
+ * measured over ten saved captures (tools/fpc_bench.c), real frames go from
+ * 8-11 minutiae to 13-148, so none of them fall under
+ * MIN_COMPUTABLE_BOZORTH_MINUTIAE any more, and the share of captures that
+ * match another capture of the same finger goes from 2 in 11 to 5 in 11.
+ *
+ * That asymmetry is the point: enrollment retries until a stage is accepted,
+ * so it quietly selects good frames, while a verification is scored on
+ * whatever arrives. Sharpening raises the floor for the verification.
+ *
+ * sigma 1.0 with amount 2.0 was the best of a grid over both.
+ */
+/* Tunable from the command line in the bench; fixed constants in the driver. */
+static gdouble unsharp_sigma = 1.0;
+static gdouble unsharp_amount = 2.0;
+#define FPC_UNSHARP_SIGMA unsharp_sigma
+#define FPC_UNSHARP_AMOUNT unsharp_amount
+/* Kernel half-width, tied to sigma so the Gaussian is not silently
+ * truncated when sigma changes -- 3 sigma is where it has effectively
+ * died out. */
+#define FPC_UNSHARP_RADIUS ((gint) ceil (3.0 * FPC_UNSHARP_SIGMA))
+#define FPC_UNSHARP_MAX_RADIUS 12
+
+static void
+fpc_unsharp (guint8 *buf, gint width, gint height)
+{
+  const gint r = MIN (FPC_UNSHARP_RADIUS, FPC_UNSHARP_MAX_RADIUS);
+  gdouble kernel[2 * FPC_UNSHARP_MAX_RADIUS + 1];
+  gdouble sum = 0.0;
+  g_autofree gdouble *tmp = g_new (gdouble, (gsize) width * height);
+  g_autofree gdouble *blur = g_new (gdouble, (gsize) width * height);
+
+  for (gint i = -r; i <= r; i++)
+    {
+      kernel[i + r] = exp (-(i * i) / (2.0 * FPC_UNSHARP_SIGMA * FPC_UNSHARP_SIGMA));
+      sum += kernel[i + r];
+    }
+  for (gint i = 0; i < 2 * r + 1; i++)
+    kernel[i] /= sum;
+
+  /* Separable Gaussian: horizontal, then vertical. */
+  for (gint y = 0; y < height; y++)
+    for (gint x = 0; x < width; x++)
+      {
+        gdouble acc = 0.0;
+        for (gint i = -r; i <= r; i++)
+          acc += kernel[i + r] * buf[y * width + CLAMP (x + i, 0, width - 1)];
+        tmp[y * width + x] = acc;
+      }
+
+  for (gint y = 0; y < height; y++)
+    for (gint x = 0; x < width; x++)
+      {
+        gdouble acc = 0.0;
+        for (gint i = -r; i <= r; i++)
+          acc += kernel[i + r] * tmp[CLAMP (y + i, 0, height - 1) * width + x];
+        blur[y * width + x] = acc;
+      }
+
+  for (gsize i = 0; i < (gsize) width * height; i++)
+    {
+      gdouble sharpened = buf[i] + FPC_UNSHARP_AMOUNT * (buf[i] - blur[i]);
+      buf[i] = (guint8) CLAMP ((gint) (sharpened + 0.5), 0, 255);
+    }
+}
+
 /* Catmull-Rom bicubic upscale.
  *
  * libfprint's fpi_image_resize() interpolates bilinearly, which softens
@@ -206,8 +276,12 @@ load_sample (sample *s, const char *path, gint w, gint h,
   if (!raw) return FALSE;
 
   s->name = g_path_get_basename (path);
+  /* Gate on the raw frame, before sharpening, which is where the threshold
+   * was calibrated and where a blank frame is unambiguous. */
   s->contrast = frame_contrast (raw, w, h);
   s->gated = (gate > 0.0 && s->contrast < gate);
+
+  fpc_unsharp (raw, w, h);
 
   img = fp_image_new (w, h);
   memcpy (img->data, raw, (gsize) w * h);
@@ -289,6 +363,10 @@ main (int argc, char **argv)
         enlarge = atoi (argv[++i]);
       else if ((!strcmp (argv[i], "-t") || !strcmp (argv[i], "--threshold")) && i + 1 < argc)
         threshold = atoi (argv[++i]);
+      else if ((!strcmp (argv[i], "-s") || !strcmp (argv[i], "--sigma")) && i + 1 < argc)
+        unsharp_sigma = atof (argv[++i]);
+      else if ((!strcmp (argv[i], "-a") || !strcmp (argv[i], "--amount")) && i + 1 < argc)
+        unsharp_amount = atof (argv[++i]);
       else if ((!strcmp (argv[i], "-g") || !strcmp (argv[i], "--gate")) && i + 1 < argc)
         gate = atof (argv[++i]);
       else if ((!strcmp (argv[i], "-w") || !strcmp (argv[i], "--width")) && i + 1 < argc)
@@ -312,8 +390,9 @@ main (int argc, char **argv)
       return 2;
     }
 
-  printf ("enlarge %dx  ->  %dx%d      threshold %d      blank gate %.0f\n\n",
-          enlarge, width * enlarge, height * enlarge, threshold, gate);
+  printf ("enlarge %dx -> %dx%d   unsharp sigma %.2f amount %.2f   threshold %d   gate %.0f\n\n",
+          enlarge, width * enlarge, height * enlarge,
+          unsharp_sigma, unsharp_amount, threshold, gate);
 
   printf ("%-16s %9s %8s %s\n", "capture", "contrast", "minutiae", "");
   for (i = 0; i < (int) samples->len; i++)
