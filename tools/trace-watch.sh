@@ -19,11 +19,11 @@ newest() {
 
 file="$(newest)"
 while [ -z "$file" ]; do
-    printf '\rwaiting for a trace matching %s ...' "$pattern"
+    printf '\r\033[Kwaiting for a trace matching %s ...' "$pattern"
     sleep 1
     file="$(newest)"
 done
-printf '\rfollowing %s\n\n' "$file"
+printf '\r\033[Kfollowing %s\n\n' "$file"
 
 tail -F -n +1 -- "$file" | jq -r --unbuffered '
   def pad(n): (tostring | if length < n then . + (" " * (n - length)) else . end);
