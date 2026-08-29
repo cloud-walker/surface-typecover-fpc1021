@@ -73,11 +73,21 @@
  * against a threshold of 24, weaker even than the 9 aes3k settles for. 3 is
  * the next step up, and what aes4000 uses. Offline the extra factor cuts
  * both ways (one sample 9 -> 18 minutiae, another 12 -> 2), so this is
- * worth keeping only if the scores say so. Measured: 2 -> best score 6,
- * 3 -> 12, 4 -> 12 with markedly more zero scores, so 3 is where the curve
- * flattens and past it interpolation starts inventing minutiae that do not
- * correspond between captures. See ../libfprint-driver/README.md. */
-#define FPC_ENLARGE_FACTOR 3
+ * worth keeping only if the scores say so, and they say 2.
+ *
+ * Measured with tools/fpc_bench.c over ten saved captures, varying only this
+ * factor: 1 -> best score 0, 2 -> 15, 3 -> 10, 4 -> 0. An earlier live
+ * comparison appeared to favour 3, but it re-enrolled and re-pressed between
+ * factors, so it compared conditions as much as factors.
+ *
+ * Past 2 the count keeps rising while correspondence collapses: three
+ * captures of one finger that was never lifted yield 11/20/23 minutiae at 2x
+ * and score 6, 7, 15 against each other, but 4/21/41 at 3x and score zero.
+ * Enlargement buys resolution for NBIS's fixed 8px block grid; beyond that it
+ * amplifies sensor noise into minutiae that differ between two images of the
+ * same finger, which is worse than having too few.
+ * See ../libfprint-driver/README.md. */
+#define FPC_ENLARGE_FACTOR 2
 
 /* Frame quality gate. The sensor happily returns blank frames -- all-white
  * or all-black -- and handing one to libfprint puts a useless print in the

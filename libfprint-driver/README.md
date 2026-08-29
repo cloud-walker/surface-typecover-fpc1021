@@ -171,22 +171,38 @@ which is necessary but may not be sufficient, since the best sample seen is
 | factor | delivered | best bozorth3 score |
 |---|---|---|
 | 1x | 160x160 | 0 — under MIN_COMPUTABLE_BOZORTH_MINUTIAE, never computed |
-| 2x | 320x320 | 6 |
-| 3x | 480x480 | **12** |
-| 4x | 640x640 | 12, with markedly more zeros (26 of 30 vs 18 of 25) |
+| **2x** | 320x320 | **15** |
+| 3x | 480x480 | 10 |
+| 4x | 640x640 | 0 |
 
 Threshold is 24; `aes3k` settles for 9. At 3x the distribution over 25
 comparisons was `0 x18, 3 x3, 6 x1, 9 x1, 11 x1, 12 x1` — three would clear
 aes3k's bar, none clear ours.
 
-**The curve flattens at 3x**, which is also what `aes4000` uses for its 96x96
-sensor. 4x returns the same best score with far more zero scores: past that
-point interpolation is inventing minutiae that do not correspond between two
-captures of the same finger, which is exactly the failure this lever was
-meant to avoid. Minutiae scanning stays cheap throughout (0.049s at 640x640),
-so cost is not what limits it.
+**2x is the optimum**, and the numbers above supersede an earlier live
+comparison that appeared to favour 3x. That comparison re-enrolled and
+re-pressed the finger between factors, so it varied conditions as much as
+factors; these come from `tools/fpc_bench.c` replaying the same ten saved
+captures through the same pipeline, with only the factor changing.
 
-Enlargement is therefore spent as a lever, at roughly half the score needed.
+What goes wrong past 2x is visible on three captures of a finger that was
+never lifted between them:
+
+| factor | minutiae | scores against each other |
+|---|---|---|
+| 1x | 8, 8, 8 | all 0 (under the floor) |
+| **2x** | 11, 20, 23 | **6, 7, 15** |
+| 3x | 4, 21, 41 | all 0 |
+| 4x | 17, 7, 20 | all 0 |
+
+At 1x the counts are stable but too low. At 2x they clear the floor and stay
+consistent. Past that the count keeps climbing while consistency collapses —
+4 against 41 minutiae from near-identical images — because interpolation is
+amplifying sensor noise into minutiae that differ between two views of the
+same finger. More minutiae that do not correspond is worse than fewer that
+do, which is why counting minutiae was the wrong measurement all along.
+
+Enlargement is spent as a lever at 15, still short of the threshold of 24.
 
 ### `fprintd-identify` appears to hang
 
