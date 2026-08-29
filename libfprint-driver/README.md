@@ -285,12 +285,44 @@ everything, and `aes3k` settles for 9. But lowering it is a security decision,
 not a tuning one, and it cannot be made from genuine scores alone: what
 matters is the *separation* between a genuine comparison and an impostor.
 
-That measurement has not been taken. It needs captures of a different finger
-run through `tools/fpc_bench.c` as impostor probes. If genuine scores sit at
-7-20 while a different finger scores 0-3, a threshold around 15 is
-defensible and can be argued upstream. If impostors also reach into the
-teens, the honest conclusion is that this sensor and NBIS do not separate
-fingers reliably, and no threshold makes it safe.
+**That measurement has now been taken, and the answer is the unwelcome one.**
+Captures of a second finger, scored against the first through
+`tools/fpc_bench.c`:
+
+| configuration | genuine | impostor | d' |
+|---|---|---|---|
+| 2x, no sharpening | 4.0 | 4.9 | -0.14 |
+| 2x + unsharp 1.0/1.0 | 10.2 | 9.1 | +0.13 |
+| **2x + unsharp 1.5/2.5 (shipped)** | **14.4** | **11.8** | **+0.26** |
+| 2x + unsharp 1.0/3.0 | 14.9 | 17.4 | -0.22 |
+| 3x + unsharp 1.5/2.5 | 8.1 | 12.7 | -0.54 |
+
+The shipped configuration is the best of those tried and does separate the
+two fingers — but barely. At its best operating point, a threshold of 16, it
+would accept 45% of genuine attempts and **14% of a stranger's finger**. A
+d' of 0.26 is nothing: usable biometrics sit above 3.
+
+**No threshold makes this safe**, and `bz3_threshold` should stay at 24 —
+which in practice means verification rejects everything, and that is the
+honest state of it.
+
+Note what this exposes about the tuning above: every image-processing
+parameter here was chosen by maximising *genuine* scores, with impostor
+scores never measured. That optimises the wrong objective — raising all
+scores together looks like progress and is not. The separation column is the
+one that matters, and it should gate any future change to this pipeline.
+
+Caveat: only two impostor captures were usable, so the impostor side rests on
+28 pairs from two images. The margin would have to be very different, not
+slightly different, for the conclusion to change.
+
+### Where that leaves the driver
+
+Capture, the wedge fix, enrollment and the diagnostics are solid and worth
+upstreaming. Verification is not, and should be presented as such rather than
+propped up with a lowered threshold: this sensor's 8x8mm window, through
+NBIS, does not currently separate fingers well enough to authenticate
+anybody.
 
 ### `fprintd-identify` appears to hang
 
