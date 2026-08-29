@@ -99,9 +99,27 @@ enrollment left ~3s. **This makes the never-ported opcode `0x0005` the prime
 suspect for a "stop/flush capture" command** — the Windows driver sends it,
 a single capture does not need it, and this is exactly the gap it would fill.
 
-Next measurements, in order:
-1. `cap`, `sleep 3000` with the finger held down, then `recv` — if data comes
-   back, the sensor free-runs and the mechanism is confirmed.
+**Tested and not confirmed:** `cap`, `sleep 3000` with the finger held down,
+then a bare `recv` — the read timed out, so a cleanly drained sensor sitting
+under a finger for three seconds queues nothing. Whatever produces the extra
+frame, it is not simply "a finger rests on an idle sensor".
+
+That test did, however, surface the largest measured difference between the
+two paths. Draining the same 412-packet image takes:
+
+| | packets | duration | per packet |
+|---|---|---|---|
+| `fpc_probe` over libusb | 412 | ~110ms | 0.27ms |
+| libfprint during enroll | 412 | ~3086ms | **7.5ms** |
+
+libfprint is 30x slower, one URB at a time through its event loop. So the
+sensor spends three seconds streaming to a host that is barely keeping up,
+with a finger on it the whole time — and the free-run test above slept
+*after* a fast drain, which is not the same situation at all.
+
+`slowcap [ms_per_packet]` (default 7ms) reproduces that pace. Next
+measurements, in order:
+1. `slowcap`, then `recv` — does a slow drain leave a frame queued?
 2. `cmd 0005` after a capture, then `recv` — does it stop the sensor
    producing frames?
 3. Whether draining until empty on activate is enough to make enrollment

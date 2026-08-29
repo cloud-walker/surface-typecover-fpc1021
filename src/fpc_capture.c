@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
     int image_len = 0;
     int attempt;
     for (attempt = 0; attempt < MAX_CAPTURE_ATTEMPTS; attempt++) {
-        fpc_cap_result rc = fpc_try_capture(h, CAPTURE_READ_TIMEOUT_MS, &image, &image_len);
+        fpc_cap_result rc = fpc_try_capture(h, CAPTURE_READ_TIMEOUT_MS, 0, &image, &image_len);
         if (rc == FPC_CAP_OK) break;
         if (rc == FPC_CAP_ERROR) {
             fprintf(stderr, "capture error, aborting\n");

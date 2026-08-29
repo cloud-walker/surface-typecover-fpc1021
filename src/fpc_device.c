@@ -80,6 +80,7 @@ int fpc_get_chip_id(libusb_device_handle *handle, fpc_chip_info *out) {
 
 fpc_cap_result fpc_try_capture(libusb_device_handle *handle,
                                unsigned int read_timeout_ms,
+                               unsigned int stream_delay_us,
                                unsigned char **out_buf, int *out_len) {
     unsigned char pkt[FPC_MAX_PACKET];
     int transferred = 0;
@@ -118,6 +119,7 @@ fpc_cap_result fpc_try_capture(libusb_device_handle *handle,
     if (have > 0) memcpy(buf, pkt + 6, (size_t)have);
 
     while (have < length) {
+        if (stream_delay_us) usleep(stream_delay_us);
         int remaining = length - have;
         int reqlen = remaining + 2;
         if (reqlen > FPC_MAX_PACKET) reqlen = FPC_MAX_PACKET;

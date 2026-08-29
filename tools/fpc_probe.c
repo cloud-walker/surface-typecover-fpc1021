@@ -52,6 +52,7 @@ static void print_help(void) {
         "  send <hex>              write an opcode, read nothing\n"
         "  recv [len] [timeout_ms] read one packet, write nothing\n"
         "  cap [file]              one capture; optionally write the raw image\n"
+        "  slowcap [ms_per_packet] one capture, draining at libfprint's pace (default 7ms)\n"
         "  loop <n> [delay_ms]     n captures back to back -- the wedge reproducer\n"
         "  usbreset                real USB bus reset (the known wedge cure)\n"
         "  sleep <ms>              pause\n"
@@ -80,10 +81,11 @@ static void cmd_id(void) {
         printf("chip: unidentified\n");
 }
 
-static void cmd_capture(const char *path) {
+static void cmd_capture(const char *path, unsigned int stream_delay_us) {
     unsigned char *img = NULL;
     int len = 0;
-    fpc_cap_result rc = fpc_try_capture(dev, DEFAULT_READ_TIMEOUT_MS, &img, &len);
+    fpc_cap_result rc = fpc_try_capture(dev, DEFAULT_READ_TIMEOUT_MS,
+                                        stream_delay_us, &img, &len);
 
     switch (rc) {
         case FPC_CAP_OK:        printf("capture ok: %d bytes\n", len); break;
@@ -124,7 +126,7 @@ static void cmd_loop(int n, int delay_ms) {
         double t0 = fpc_trace_now_ms();
 
         fpc_trace_event("capture_begin", "#%d", i);
-        fpc_cap_result rc = fpc_try_capture(dev, DEFAULT_READ_TIMEOUT_MS, &img, &len);
+        fpc_cap_result rc = fpc_try_capture(dev, DEFAULT_READ_TIMEOUT_MS, 0, &img, &len);
         double elapsed = fpc_trace_now_ms() - t0;
 
         switch (rc) {
@@ -225,7 +227,15 @@ static void run_command(int argc, char **argv) {
         fpc_trace_read_reply(dev, "probe.reply", buf, sizeof(buf) < (size_t)len ?
                              (int)sizeof(buf) : len, &got, timeout);
     } else if (strcmp(c, "cap") == 0) {
-        cmd_capture(argc >= 2 ? argv[1] : NULL);
+        cmd_capture(argc >= 2 ? argv[1] : NULL, 0);
+    } else if (strcmp(c, "slowcap") == 0) {
+        /* Drain the image at libfprint's measured pace instead of the bus's.
+         * The wedge shows up on libfprint's path and not on ours, and this is
+         * the largest measured difference between the two. */
+        unsigned int us = (argc >= 2) ? (unsigned int)atoi(argv[1]) * 1000u : 7000u;
+        printf("draining at %u.%03ums/packet (~%.1fs for 412 packets)\n",
+               us / 1000u, us % 1000u, (double)us * 412.0 / 1e6);
+        cmd_capture(NULL, us);
     } else if (strcmp(c, "loop") == 0 && argc >= 2) {
         int n = atoi(argv[1]);
         int delay = (argc >= 3) ? atoi(argv[2]) : DEFAULT_LOOP_DELAY_MS;
