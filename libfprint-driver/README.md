@@ -267,6 +267,31 @@ unambiguous and where its threshold was calibrated.
 Ten samples is a small dataset and the optimum is loosely determined; the
 plateau is the reassuring part, not the peak.
 
+On the device, this removed the short-circuit entirely. Twenty comparisons
+across several verifications, before and after:
+
+```
+before:  0 x20
+after :  7 x3   9 x1   10 x4   11 x3   12 x3   13 x3   15 x1   17 x1   20 x1
+```
+
+Every comparison now produces a real score, and the best is 20 against a
+threshold of 24.
+
+### The threshold question, and the measurement it needs
+
+With genuine scores clustering between 7 and 20, a threshold of 24 rejects
+everything, and `aes3k` settles for 9. But lowering it is a security decision,
+not a tuning one, and it cannot be made from genuine scores alone: what
+matters is the *separation* between a genuine comparison and an impostor.
+
+That measurement has not been taken. It needs captures of a different finger
+run through `tools/fpc_bench.c` as impostor probes. If genuine scores sit at
+7-20 while a different finger scores 0-3, a threshold around 15 is
+defensible and can be argued upstream. If impostors also reach into the
+teens, the honest conclusion is that this sensor and NBIS do not separate
+fingers reliably, and no threshold makes it safe.
+
 ### `fprintd-identify` appears to hang
 
 It is not hanging on the driver. `fprintd-identify` keeps capturing until it
