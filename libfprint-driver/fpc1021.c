@@ -308,6 +308,21 @@ deliver_image (FpDevice *dev)
   FpImage *img = fp_image_new (self->width, self->height);
 
   memcpy (img->data, self->image_buf, self->image_len);
+
+  /* Scan resolution, used by NBIS to size the neighbourhood it scores each
+   * minutia's reliability over (RADIUS_MM * ppmm in mindtct/quality.c).
+   * Left unset it is 0.0, collapsing that radius to zero pixels, so every
+   * minutia is scored over an empty neighbourhood. The FPC capacitive
+   * family is specified at 508 dpi; worth re-checking against the datasheet
+   * if matching stays weak.
+   *
+   * Set on its own here, deliberately: an earlier attempt changed this and
+   * FPI_IMAGE_PARTIAL together and enrollment stopped accepting any stage,
+   * which left it unknown which of the two did it. This one should not be
+   * able to -- it affects reliability scoring, not how many minutiae are
+   * found. If enrollment still completes, that is confirmed. */
+  img->ppmm = 508.0 / 25.4;
+
   fpi_image_device_image_captured (idev, img);
   fpi_image_device_report_finger_status (idev, FALSE);
 

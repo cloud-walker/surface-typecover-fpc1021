@@ -12,7 +12,7 @@
 
 pkgname=libfprint
 pkgver=1.94.100
-pkgrel=6
+pkgrel=7
 pkgdesc="Library for fingerprint readers (+ fpc1021 / Surface Type Cover driver)"
 arch=('x86_64')
 url="https://fprint.freedesktop.org/"
