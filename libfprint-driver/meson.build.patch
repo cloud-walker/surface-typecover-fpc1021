@@ -1,0 +1,24 @@
+diff --git i/libfprint/meson.build w/libfprint/meson.build
+index f11533c..b6911c6 100644
+--- i/libfprint/meson.build
++++ w/libfprint/meson.build
+@@ -139,6 +139,7 @@ driver_sources = {
+     'focaltech_moc' : files('drivers/focaltech_moc/focaltech_moc.c'),
+     'mafpmoc' : files('drivers/mafpmoc/mafpmoc.c'),
+     'secugen' : files('drivers/secugen.c'),
++    'fpc1021' : files('drivers/fpc1021.c'),
+ }
+ 
+ helper_sources = {
+diff --git i/meson.build w/meson.build
+index ab09dc1..f1a76a4 100644
+--- i/meson.build
++++ w/meson.build
+@@ -147,6 +147,7 @@ drivers_info = {
+     'focaltech_moc': {},
+     'mafpmoc': {},
+     'secugen': {},
++    'fpc1021': {},
+ 
+     # SPI driver (non-optional if SPI is available)
+     'elanspi': { 'spi': true, 'helper': ['udev'], 'optional': not have_spi },

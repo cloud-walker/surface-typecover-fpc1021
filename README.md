@@ -10,7 +10,12 @@ Cover with Fingerprint ID**.
 - ✅ Validated end-to-end against real hardware: a working standalone capture
   tool (`src/fpc_capture.c`) pulls a real, recognizable fingerprint image via
   plain `libusb` on Linux.
-- ⬜ libfprint driver integration — not started yet.
+- ✅ Working libfprint `FpImageDevice` driver — see
+  [`libfprint-driver/`](libfprint-driver/). Builds cleanly against upstream
+  libfprint and has captured a real, clean fingerprint image end-to-end
+  through libfprint's own APIs (device probe → open → activate → capture →
+  minutiae detection), not just the raw prototype above.
+- ⬜ Not yet upstreamed to libfprint/linux-surface.
 
 ## Background
 
@@ -53,9 +58,11 @@ magick -size 160x160 -depth 8 gray:capture.bin capture.png
 
 - [x] Reverse-engineer the wire protocol
 - [x] Validate against real hardware
-- [ ] Port to a proper libfprint `FpImageDevice` driver
+- [x] Port to a proper libfprint `FpImageDevice` driver
 - [ ] Image-quality / finger-presence checks (the Windows driver's logic for
       this has been identified but not yet ported — see `PROTOCOL.md`)
+- [ ] Tune the "await finger" retry/cooldown timing against extended real use
+- [ ] Test enroll/verify via `fprintd`, not just raw capture
 - [ ] Upstream to libfprint and linux-surface
 
 Contributions and testing on other Type Cover / FPC-chip revisions welcome —
