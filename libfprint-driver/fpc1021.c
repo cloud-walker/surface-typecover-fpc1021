@@ -308,6 +308,23 @@ deliver_image (FpDevice *dev)
   FpImage *img = fp_image_new (self->width, self->height);
 
   memcpy (img->data, self->image_buf, self->image_len);
+
+  /* 160x160 over roughly 8mm of finger is a partial scan: the edge of the
+   * image is not the edge of the finger, so every ridge running out of
+   * frame looks like a ridge ending. FPI_IMAGE_PARTIAL tells NBIS to drop
+   * those perimeter artefacts instead of matching on them -- the same thing
+   * elan.c and elanspi.c do for their small press sensors. Without it the
+   * spurious minutiae pollute both the enrolled template and the image
+   * being verified against it. */
+  img->flags |= FPI_IMAGE_PARTIAL;
+
+  /* Scan resolution, used by NBIS to size the neighbourhood it scores each
+   * minutia's reliability over. Left unset it is 0.0, which collapses that
+   * radius to zero pixels. The FPC capacitive family is specified at
+   * 508 dpi, i.e. 160 px across ~8mm; worth re-checking against the
+   * datasheet if matching stays weak. */
+  img->ppmm = 508.0 / 25.4;
+
   fpi_image_device_image_captured (idev, img);
   fpi_image_device_report_finger_status (idev, FALSE);
 

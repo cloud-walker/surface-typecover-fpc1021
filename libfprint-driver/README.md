@@ -71,6 +71,36 @@ stuck state while a physical unplug/replug cleared it instantly. The USB
 reset recovery path is retained as a last resort but should no longer
 trigger in normal use.
 
+## Matching
+
+`fprintd-verify` returned `verify-no-match` four times in a row against a
+freshly completed enrollment, on captures that look excellent — sharp dark
+ridges on light valleys, correct polarity for NBIS. So the problem was not
+acquisition.
+
+`tools/fpc_minutiae.c` counts what libfprint actually extracts from a raw
+capture, which turns that into a measurement:
+
+```
+image: 160x160, 0.00 px/mm
+minutiae detected: 11
+```
+
+Two defects behind those numbers, both now fixed in `deliver_image`:
+
+- **No `FPI_IMAGE_PARTIAL`.** On a 160x160 patch the image edge is not the
+  finger's edge, so every ridge running out of frame reads as a ridge
+  ending. The flag makes NBIS drop those perimeter artefacts; `elan.c` and
+  `elanspi.c` both set it for the same reason. Without it the spurious
+  minutiae pollute the template and the verification image alike.
+- **`ppmm` left at 0.0.** NBIS sizes the neighbourhood it scores each
+  minutia's reliability over as `RADIUS_MM * ppmm`, so zero collapses it to
+  no pixels at all. Set from the FPC family's stated 508 dpi.
+
+11 minutiae is thin either way — bozorth3 needs overlap between two sets —
+so if matching stays weak after this, the next lever is the image-quality
+gating below, which would stop poor frames entering the template at all.
+
 Also not yet done:
 - The "await finger" retry-loop timing (`FPC_RETRY_DELAY_MS`,
   `FPC_CAPTURE_COOLDOWN_MS`, the 3000ms read timeout in
