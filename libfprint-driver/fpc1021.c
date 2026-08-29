@@ -54,6 +54,13 @@
  * seconds) with no reply at all, assume the sensor firmware is wedged and
  * issue a real USB bus reset -- see consecutive_timeouts in the struct. */
 #define FPC_MAX_CONSECUTIVE_TIMEOUTS 6
+
+/* Draining the IN endpoint before a capture. A stale image is a header plus
+ * 412 stream packets, so the cap is set above that with room to spare; the
+ * timeout only has to be long enough for a packet that is already queued to
+ * come back, not for the sensor to produce anything. */
+#define FPC_DRAIN_TIMEOUT_MS 50
+#define FPC_DRAIN_MAX_PACKETS 512
 #define FPC_CAPTURE_COOLDOWN_MS 3000
 
 struct _FpiDeviceFpc1021
@@ -76,6 +83,11 @@ struct _FpiDeviceFpc1021
    * empirically -- unplugging/replugging the Type Cover always fixes it).
    * Track consecutive timeouts and issue a real reset after too many. */
   guint    consecutive_timeouts;
+
+  /* Reads left unconsumed on the IN endpoint desynchronise everything after
+   * them, because this protocol pairs reads and writes 1:1. Counted per
+   * capture so an unusual drain gets reported once rather than silently. */
+  guint    drained;
 };
 
 G_DECLARE_FINAL_TYPE (FpiDeviceFpc1021, fpi_device_fpc1021, FPI,
@@ -249,6 +261,7 @@ dev_close (FpImageDevice *idev)
 /* ---------------------------------------------------------------------- */
 
 enum capture_states {
+  CAPTURE_DRAIN,
   CAPTURE_RESET,
   CAPTURE_RESET_ACK,
   CAPTURE_TRIGGER,
@@ -442,6 +455,61 @@ capture_stream_cb (FpiUsbTransfer *transfer, FpDevice *dev,
   fpi_ssm_jump_to_state (transfer->ssm, CAPTURE_STREAM);
 }
 
+/* Empties the IN endpoint before starting a capture.
+ *
+ * Root cause this defends against (2026-08-29, usbmon trace of a real
+ * fprintd-enroll): after two captures that were each read out in full, the
+ * sensor delivered a third capture header nobody had asked for. Because the
+ * protocol pairs reads and writes 1:1, that one unread packet put every
+ * later reply behind ~412 stale stream packets: Reset answered by pixel
+ * data, Get Chip ID answered by stream packets, and finally silence and
+ * endless timeouts -- the state this driver had been calling a wedge and
+ * "recovering" from with a USB reset that aborts the enrollment.
+ *
+ * Where that extra frame comes from is still unknown; it did not reproduce
+ * over plain libusb in 21 captures, including four paced to match
+ * libfprint's own ~7.5ms/packet drain. Draining does not need to know: it
+ * makes an unread packet harmless instead of fatal, which is what stops the
+ * enrollment dying.
+ */
+static void
+capture_drain_cb (FpiUsbTransfer *transfer, FpDevice *dev,
+                  gpointer user_data, GError *error)
+{
+  FpiDeviceFpc1021 *self = FPI_DEVICE_FPC1021 (dev);
+
+  if (error)
+    {
+      /* A timeout is the expected outcome: the endpoint is empty, which is
+       * the normal case on every capture after the first. */
+      if (g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT))
+        {
+          g_error_free (error);
+          if (self->drained)
+            fp_warn ("fpc1021: drained %u stale packet(s) before capture",
+                     self->drained);
+          fpi_ssm_next_state (transfer->ssm);
+          return;
+        }
+      /* Anything else is not worth failing a capture over -- the capture
+       * itself will report a real problem soon enough. */
+      g_error_free (error);
+      fpi_ssm_next_state (transfer->ssm);
+      return;
+    }
+
+  self->drained++;
+  if (self->drained >= FPC_DRAIN_MAX_PACKETS)
+    {
+      fp_warn ("fpc1021: still draining after %u packets, giving up",
+               self->drained);
+      fpi_ssm_next_state (transfer->ssm);
+      return;
+    }
+
+  fpi_ssm_jump_to_state (transfer->ssm, CAPTURE_DRAIN);
+}
+
 static void
 capture_run_state (FpiSsm *ssm, FpDevice *dev)
 {
@@ -449,6 +517,12 @@ capture_run_state (FpiSsm *ssm, FpDevice *dev)
 
   switch (fpi_ssm_get_cur_state (ssm))
     {
+    case CAPTURE_DRAIN:
+      /* Short timeout: this only has to collect what is already queued. */
+      fpc_read_reply_timeout (ssm, dev, FPC_MAX_PACKET, FPC_DRAIN_TIMEOUT_MS,
+                              capture_drain_cb);
+      break;
+
     case CAPTURE_RESET:
       fpc_write_cmd (ssm, dev, CMD_RESET);
       break;
@@ -531,6 +605,7 @@ start_capture (FpImageDevice *idev)
   g_clear_pointer (&self->image_buf, g_free);
   self->image_len = 0;
   self->image_have = 0;
+  self->drained = 0;
 
   ssm = fpi_ssm_new (FP_DEVICE (idev), capture_run_state, CAPTURE_NUM_STATES);
   fpi_ssm_start (ssm, capture_sm_complete);
