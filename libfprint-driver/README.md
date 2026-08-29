@@ -60,11 +60,18 @@ and a full 25600-byte image every time. The documented wedge appears after
 hardware.
 
 What that run did *not* exercise is the open/close cycle: it captured ten
-times inside a single session, claiming the interface once. libfprint opens
-and closes the image device around enrollment stages (`Image device close
-completed` in the fprintd logs). So the untested variable is not repeated
-capture but **repeated activate/deactivate**, which is where the
-investigation should go next.
+times inside a single session, claiming the interface once. So the next run
+did exactly that — six invocations of the standalone capture tool, each a
+full open → detach kernel driver → claim → chip id → capture → release →
+close. **Six for six, no wedge.**
+
+Totals for the session: 17 successful captures over plain libusb, zero
+wedges, against a documented failure after 2-3. Neither repeated capture nor
+repeated open/close reproduces it. That leaves libfprint's own path — its
+state machine, its async transfers, its activate/deactivate handling — as
+where to look, and `usbmon` as the way to look, since it traces at the
+kernel URB level regardless of which userspace program is driving the
+device.
 
 Also not yet done:
 - The "await finger" retry-loop timing (`FPC_RETRY_DELAY_MS`,
