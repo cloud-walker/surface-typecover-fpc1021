@@ -1,0 +1,4 @@
+src/fpc_capture
+*.o
+*.bin
+*.png
