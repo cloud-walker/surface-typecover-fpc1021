@@ -65,12 +65,17 @@
  * image over -- aes4000 (96x96) by 3, aes3500 (128x128) by 2, both with the
  * comment that it is "to make the image big enough for NBIS to process
  * reliably". At 160x160 this sensor is the largest of the three, so 2 puts
- * it at 320x320, comparable to what those two deliver.
+ * it at 320x320 and 3 at 480x480, both in the range those two deliver.
  *
- * Measured effect on a real capture: 7 minutiae at 1x, 67 at 2x. Detection
- * below MIN_COMPUTABLE_BOZORTH_MINUTIAE (10) is what made every comparison
- * score exactly 0 -- see ../libfprint-driver/README.md. */
-#define FPC_ENLARGE_FACTOR 2
+ * Detection below MIN_COMPUTABLE_BOZORTH_MINUTIAE (10) is what made every
+ * comparison score exactly 0. At 2 the floor was cleared and bozorth3
+ * started producing real scores for the first time -- but only 3 and 6
+ * against a threshold of 24, weaker even than the 9 aes3k settles for. 3 is
+ * the next step up, and what aes4000 uses. Offline the extra factor cuts
+ * both ways (one sample 9 -> 18 minutiae, another 12 -> 2), so this is
+ * worth keeping only if the scores say so.
+ * See ../libfprint-driver/README.md. */
+#define FPC_ENLARGE_FACTOR 3
 
 /* Frame quality gate. The sensor happily returns blank frames -- all-white
  * or all-black -- and handing one to libfprint puts a useless print in the

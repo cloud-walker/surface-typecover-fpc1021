@@ -166,6 +166,19 @@ remove the zero-minutiae frames and the 2-minutia print now in the template,
 which is necessary but may not be sufficient, since the best sample seen is
 11.
 
+### Enlargement vs match score, measured
+
+| factor | delivered | best bozorth3 score |
+|---|---|---|
+| 1x | 160x160 | 0 — under MIN_COMPUTABLE_BOZORTH_MINUTIAE, never computed |
+| 2x | 320x320 | 6 |
+| 3x | 480x480 | **12** |
+
+Threshold is 24; `aes3k` settles for 9. At 3x the distribution over 25
+comparisons was `0 x18, 3 x3, 6 x1, 9 x1, 11 x1, 12 x1` — three would clear
+aes3k's bar, none clear ours. Enlargement helps monotonically so far, and 3x
+is already what `aes4000` uses for a 96x96 sensor.
+
 ### `fprintd-identify` appears to hang
 
 It is not hanging on the driver. `fprintd-identify` keeps capturing until it
