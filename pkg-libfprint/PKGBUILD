@@ -1,0 +1,40 @@
+# Maintainer: local build, patched with the fpc1021 driver
+#
+# Builds the same libfprint 1.94.100 that Arch's extra/libfprint ships, plus
+# our fpc1021 driver (Microsoft Surface Type Cover with Fingerprint ID).
+# Source is a fixed local checkout (already patched, already validated to
+# build and work against real hardware), not fetched from the network, so
+# this PKGBUILD only exists to get it installed and tracked via pacman
+# instead of overwriting /usr files by hand.
+#
+# See https://github.com/cloud-walker/surface-typecover-fpc1021 for the
+# driver source, protocol writeup, and how to apply it to a clean checkout.
+
+pkgname=libfprint
+pkgver=1.94.100
+pkgrel=2
+pkgdesc="Library for fingerprint readers (+ fpc1021 / Surface Type Cover driver)"
+arch=('x86_64')
+url="https://fprint.freedesktop.org/"
+license=('LGPL-2.1-or-later')
+depends=('libgcc' 'glib2' 'glibc' 'libgudev' 'libgusb' 'openssl' 'pixman')
+makedepends=('meson' 'ninja' 'gobject-introspection' 'cairo')
+provides=("libfprint-2.so=2-64")
+options=('!lto')
+
+_srcdir="$HOME/dev/surface-typecover-fpc1021/.work/libfprint"
+
+build() {
+  rm -rf "$srcdir/build" "$srcdir/build-src"
+  mkdir -p "$srcdir/build-src"
+  rsync -a --exclude=build --exclude=.git --exclude=__pycache__ \
+    "$_srcdir/" "$srcdir/build-src/"
+  arch-meson "$srcdir/build-src" "$srcdir/build" \
+    -Ddoc=false \
+    -Dintrospection=true
+  meson compile -C "$srcdir/build"
+}
+
+package() {
+  meson install -C "$srcdir/build" --destdir "$pkgdir"
+}

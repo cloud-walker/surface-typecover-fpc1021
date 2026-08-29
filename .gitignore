@@ -3,3 +3,7 @@ src/fpc_capture
 *.bin
 *.png
 .work/
+pkg-libfprint/pkg/
+pkg-libfprint/src/
+pkg-libfprint/*.pkg.tar.zst
+pkg-libfprint/*.log

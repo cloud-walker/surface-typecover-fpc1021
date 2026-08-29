@@ -50,7 +50,11 @@
  * "Timing" section for the (larger, more conservative) values observed in
  * the original Windows driver. */
 #define FPC_RETRY_DELAY_MS 200
-#define FPC_CAPTURE_COOLDOWN_MS 1000
+/* After this many back-to-back timeouts (~this many * (500ms poll + delay)
+ * seconds) with no reply at all, assume the sensor firmware is wedged and
+ * issue a real USB bus reset -- see consecutive_timeouts in the struct. */
+#define FPC_MAX_CONSECUTIVE_TIMEOUTS 6
+#define FPC_CAPTURE_COOLDOWN_MS 3000
 
 struct _FpiDeviceFpc1021
 {
@@ -64,6 +68,14 @@ struct _FpiDeviceFpc1021
   gsize    image_have;
 
   gboolean deactivating;
+
+  /* The sensor firmware sometimes stops answering the capture-reply read
+   * entirely (every CAPTURE_READ_HEADER attempt times out, even with a
+   * finger present) after a handful of captures. Its own "reset" opcode
+   * (0x0008) does not clear this; only a real USB bus reset does (verified
+   * empirically -- unplugging/replugging the Type Cover always fixes it).
+   * Track consecutive timeouts and issue a real reset after too many. */
+  guint    consecutive_timeouts;
 };
 
 G_DECLARE_FINAL_TYPE (FpiDeviceFpc1021, fpi_device_fpc1021, FPI,
@@ -93,14 +105,21 @@ fpc_write_cmd (FpiSsm *ssm, FpDevice *dev, guint16 opcode)
 }
 
 static void
-fpc_read_reply (FpiSsm *ssm, FpDevice *dev, gsize len,
-                FpiUsbTransferCallback cb)
+fpc_read_reply_timeout (FpiSsm *ssm, FpDevice *dev, gsize len,
+                        guint timeout_ms, FpiUsbTransferCallback cb)
 {
   FpiUsbTransfer *transfer = fpi_usb_transfer_new (dev);
 
   fpi_usb_transfer_fill_bulk (transfer, FPC_EP_IN, len);
   transfer->ssm = ssm;
-  fpi_usb_transfer_submit (transfer, FPC_USB_TIMEOUT, NULL, cb, NULL);
+  fpi_usb_transfer_submit (transfer, timeout_ms, NULL, cb, NULL);
+}
+
+static void
+fpc_read_reply (FpiSsm *ssm, FpDevice *dev, gsize len,
+                FpiUsbTransferCallback cb)
+{
+  fpc_read_reply_timeout (ssm, dev, len, FPC_USB_TIMEOUT, cb);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -252,6 +271,50 @@ deliver_image (FpDevice *dev)
   g_clear_pointer (&self->image_buf, g_free);
 }
 
+/* Real USB bus reset (not the sensor's own soft "reset" opcode) to recover
+ * from the sensor going unresponsive. Synchronous, matching the pattern
+ * other libfprint drivers (e.g. vfs7552.c) use for device-level resets.
+ *
+ * KNOWN LIMITATION (2026-08-29 live testing): this is the only thing found
+ * so far that actually restores the sensor's responsiveness once it stops
+ * answering touches (matches manually unplugging/replugging the Type
+ * Cover, which also always fixed it). A lighter CLEAR_FEATURE(ENDPOINT_HALT)
+ * on both endpoints was tried first and does NOT restore touch detection
+ * at all -- so whatever wedges the sensor is not a simple USB pipe stall.
+ * The real cost of the full reset: it makes libfprint think the device
+ * was disconnected, which aborts whatever enroll/verify session was in
+ * progress. So this recovers the *device* but not the *session* -- a
+ * multi-stage enrollment currently cannot survive one of these. The actual
+ * root cause (why the sensor wedges after ~2-3 captures at all) is still
+ * unknown; see PROTOCOL.md / project memory for the likely next lead (an
+ * uninvestigated vtable call in the original Windows driver's reset
+ * routine, on a different object than the one this function already
+ * mirrors). Shipping the full reset anyway because never recovering at all
+ * is worse than recovering with a session restart. */
+static void
+fpc_recover_wedged_device (FpDevice *dev)
+{
+  GUsbDevice *usb_dev = fpi_device_get_usb_device (dev);
+  GError *error = NULL;
+
+  fp_warn ("fpc1021: sensor stopped responding after %u timeouts, issuing USB reset",
+           FPC_MAX_CONSECUTIVE_TIMEOUTS);
+
+  g_usb_device_release_interface (usb_dev, FPC_USB_INTERFACE, 0, NULL);
+
+  if (!g_usb_device_reset (usb_dev, &error))
+    {
+      fp_warn ("fpc1021: USB reset failed: %s", error->message);
+      g_error_free (error);
+    }
+
+  if (!g_usb_device_claim_interface (usb_dev, FPC_USB_INTERFACE, 0, &error))
+    {
+      fp_warn ("fpc1021: could not re-claim interface after reset: %s", error->message);
+      g_error_free (error);
+    }
+}
+
 static void
 capture_header_cb (FpiUsbTransfer *transfer, FpDevice *dev,
                    gpointer user_data, GError *error)
@@ -263,9 +326,28 @@ capture_header_cb (FpiUsbTransfer *transfer, FpDevice *dev,
 
   if (error)
     {
+      /* The sensor does not answer this read at all until a finger is
+       * actually on it -- a USB read timeout here is the normal "not ready
+       * yet" signal (matches the Windows driver's own pending/retry
+       * sentinel on this exact read), not a failure. Anything else is a
+       * real error. */
+      if (g_error_matches (error, G_USB_DEVICE_ERROR, G_USB_DEVICE_ERROR_TIMED_OUT))
+        {
+          g_error_free (error);
+          self->consecutive_timeouts++;
+          if (self->consecutive_timeouts >= FPC_MAX_CONSECUTIVE_TIMEOUTS)
+            {
+              fpc_recover_wedged_device (dev);
+              self->consecutive_timeouts = 0;
+            }
+          fpi_ssm_mark_completed_delayed (transfer->ssm, FPC_RETRY_DELAY_MS);
+          return;
+        }
       fpi_ssm_mark_failed (transfer->ssm, error);
       return;
     }
+
+  self->consecutive_timeouts = 0;
 
   if (transfer->actual_length < 4)
     {
@@ -382,7 +464,11 @@ capture_run_state (FpiSsm *ssm, FpDevice *dev)
       break;
 
     case CAPTURE_READ_HEADER:
-      fpc_read_reply (ssm, dev, FPC_MAX_PACKET, capture_header_cb);
+      /* Short timeout: this read simply doesn't complete until a finger is
+       * on the sensor, so a "timeout" here is the normal polling case, not
+       * an error (see capture_header_cb). Keeping it short makes the
+       * await-finger retry loop responsive. */
+      fpc_read_reply_timeout (ssm, dev, FPC_MAX_PACKET, 3000, capture_header_cb);
       break;
 
     case CAPTURE_STREAM:
