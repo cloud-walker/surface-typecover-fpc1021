@@ -73,8 +73,10 @@
  * against a threshold of 24, weaker even than the 9 aes3k settles for. 3 is
  * the next step up, and what aes4000 uses. Offline the extra factor cuts
  * both ways (one sample 9 -> 18 minutiae, another 12 -> 2), so this is
- * worth keeping only if the scores say so.
- * See ../libfprint-driver/README.md. */
+ * worth keeping only if the scores say so. Measured: 2 -> best score 6,
+ * 3 -> 12, 4 -> 12 with markedly more zero scores, so 3 is where the curve
+ * flattens and past it interpolation starts inventing minutiae that do not
+ * correspond between captures. See ../libfprint-driver/README.md. */
 #define FPC_ENLARGE_FACTOR 3
 
 /* Frame quality gate. The sensor happily returns blank frames -- all-white

@@ -173,11 +173,20 @@ which is necessary but may not be sufficient, since the best sample seen is
 | 1x | 160x160 | 0 — under MIN_COMPUTABLE_BOZORTH_MINUTIAE, never computed |
 | 2x | 320x320 | 6 |
 | 3x | 480x480 | **12** |
+| 4x | 640x640 | 12, with markedly more zeros (26 of 30 vs 18 of 25) |
 
 Threshold is 24; `aes3k` settles for 9. At 3x the distribution over 25
 comparisons was `0 x18, 3 x3, 6 x1, 9 x1, 11 x1, 12 x1` — three would clear
-aes3k's bar, none clear ours. Enlargement helps monotonically so far, and 3x
-is already what `aes4000` uses for a 96x96 sensor.
+aes3k's bar, none clear ours.
+
+**The curve flattens at 3x**, which is also what `aes4000` uses for its 96x96
+sensor. 4x returns the same best score with far more zero scores: past that
+point interpolation is inventing minutiae that do not correspond between two
+captures of the same finger, which is exactly the failure this lever was
+meant to avoid. Minutiae scanning stays cheap throughout (0.049s at 640x640),
+so cost is not what limits it.
+
+Enlargement is therefore spent as a lever, at roughly half the score needed.
 
 ### `fprintd-identify` appears to hang
 
