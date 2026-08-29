@@ -93,6 +93,38 @@ about, one at a time. Don't sweep the space. FPC chips carry calibration and
 OTP registers, and this sensor is soldered inside a Type Cover — an unknown
 opcode could write persistent state. There is deliberately no sweep command.
 
+## Watching what another program does: `usbmon-watch.sh`
+
+`trace-watch.sh` renders our own libusb calls. It cannot see a capture driven
+by libfprint or fprintd, which is where the wedge actually lives —
+17 captures over plain libusb never reproduced it.
+
+`usbmon-watch.sh` traces the sensor's bulk endpoints at the kernel URB level
+instead, so it sees the traffic whoever generates it:
+
+```sh
+sudo modprobe usbmon
+sudo tools/usbmon-watch.sh | tee usbmon-enroll.txt   # pane 2
+fprintd-enroll                                        # pane 1
+```
+
+```
+     0.000  OUT submit    len=2      status=-115  0100
+     0.133  OUT complete  len=2      status=0
+     0.221  IN  submit    len=64     status=-115
+     0.361  IN  complete  len=6      status=0     01100000 1b02
+```
+
+It finds the device's bus and device number itself and filters to endpoints
+4 (out) and 3 (in) — interface 0 is the keyboard, and its interrupt traffic
+would bury everything.
+
+The reason to reach for it: at the libusb API level, a device that NAKs
+forever, one that stalls, and one that was never asked anything all surface
+as the same failed read. At URB level they are three different pictures, and
+three different bugs. `status=-115` is `-EINPROGRESS`, the normal marker on a
+submit; a completion carries the real status.
+
 ## Trace format
 
 Every transfer is recorded on both sinks: a human-readable line on stderr,
