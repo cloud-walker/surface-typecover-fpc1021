@@ -95,6 +95,8 @@ G_DECLARE_FINAL_TYPE (FpiDeviceFpc1021, fpi_device_fpc1021, FPI,
 G_DEFINE_TYPE (FpiDeviceFpc1021, fpi_device_fpc1021, FP_TYPE_IMAGE_DEVICE);
 
 static void start_capture (FpImageDevice *idev);
+static void fpc_drain_cb (FpiUsbTransfer *transfer, FpDevice *dev,
+                          gpointer user_data, GError *error);
 
 /* ---------------------------------------------------------------------- */
 /* Low-level protocol helpers                                             */
@@ -139,6 +141,12 @@ fpc_read_reply (FpiSsm *ssm, FpDevice *dev, gsize len,
 /* ---------------------------------------------------------------------- */
 
 enum open_states {
+  /* An image the sensor produced but nobody read survives a close/open
+   * cycle: the very first fprintd-verify after a completed enrollment read
+   * a stale capture header here and reported "unrecognised FPC chip ID
+   * 0x6400" -- 0x6400 being 25600, the image length field of that header.
+   * Drain before trusting anything on this endpoint. */
+  OPEN_DRAIN,
   OPEN_GET_CHIP_ID,
   OPEN_READ_CHIP_ID,
   OPEN_NUM_STATES,
@@ -149,7 +157,7 @@ open_read_chip_id_cb (FpiUsbTransfer *transfer, FpDevice *dev,
                       gpointer user_data, GError *error)
 {
   FpiDeviceFpc1021 *self = FPI_DEVICE_FPC1021 (dev);
-  guint16 chip_id, masked;
+  guint16 chip_id, masked, status;
 
   if (error)
     {
@@ -163,6 +171,20 @@ open_read_chip_id_cb (FpiUsbTransfer *transfer, FpDevice *dev,
                            fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
                                                      "short Get-Chip-ID reply (%" G_GSSIZE_FORMAT " bytes)",
                                                      transfer->actual_length));
+      return;
+    }
+
+  /* Replies carry status = 0x1000 | opcode, so a reply that does not
+   * acknowledge Get Chip ID is somebody else's -- the endpoint is
+   * desynchronised and every byte after this is meaningless. Say so, rather
+   * than decoding a capture header's length field as a chip ID. */
+  status = transfer->buffer[0] | (transfer->buffer[1] << 8);
+  if (status != (0x1000 | CMD_GET_CHIP_ID))
+    {
+      fpi_ssm_mark_failed (transfer->ssm,
+                           fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                                                     "desynchronised reply: expected status 0x%04x, got 0x%04x",
+                                                     0x1000 | CMD_GET_CHIP_ID, status));
       return;
     }
 
@@ -210,6 +232,11 @@ open_run_state (FpiSsm *ssm, FpDevice *dev)
 {
   switch (fpi_ssm_get_cur_state (ssm))
     {
+    case OPEN_DRAIN:
+      fpc_read_reply_timeout (ssm, dev, FPC_MAX_PACKET, FPC_DRAIN_TIMEOUT_MS,
+                              fpc_drain_cb);
+      break;
+
     case OPEN_GET_CHIP_ID:
       fpc_write_cmd (ssm, dev, CMD_GET_CHIP_ID);
       break;
@@ -229,8 +256,11 @@ open_sm_complete (FpiSsm *ssm, FpDevice *dev, GError *error)
 static void
 dev_open (FpImageDevice *idev)
 {
+  FpiDeviceFpc1021 *self = FPI_DEVICE_FPC1021 (idev);
   GError *error = NULL;
   FpiSsm *ssm;
+
+  self->drained = 0;
 
   if (!g_usb_device_claim_interface (fpi_device_get_usb_device (FP_DEVICE (idev)),
                                      FPC_USB_INTERFACE, 0, &error))
@@ -473,8 +503,8 @@ capture_stream_cb (FpiUsbTransfer *transfer, FpDevice *dev,
  * enrollment dying.
  */
 static void
-capture_drain_cb (FpiUsbTransfer *transfer, FpDevice *dev,
-                  gpointer user_data, GError *error)
+fpc_drain_cb (FpiUsbTransfer *transfer, FpDevice *dev,
+              gpointer user_data, GError *error)
 {
   FpiDeviceFpc1021 *self = FPI_DEVICE_FPC1021 (dev);
 
@@ -507,7 +537,7 @@ capture_drain_cb (FpiUsbTransfer *transfer, FpDevice *dev,
       return;
     }
 
-  fpi_ssm_jump_to_state (transfer->ssm, CAPTURE_DRAIN);
+  fpi_ssm_jump_to_state (transfer->ssm, fpi_ssm_get_cur_state (transfer->ssm));
 }
 
 static void
@@ -520,7 +550,7 @@ capture_run_state (FpiSsm *ssm, FpDevice *dev)
     case CAPTURE_DRAIN:
       /* Short timeout: this only has to collect what is already queued. */
       fpc_read_reply_timeout (ssm, dev, FPC_MAX_PACKET, FPC_DRAIN_TIMEOUT_MS,
-                              capture_drain_cb);
+                              fpc_drain_cb);
       break;
 
     case CAPTURE_RESET:

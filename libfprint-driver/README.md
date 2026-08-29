@@ -44,6 +44,18 @@ capture headers received:     14
 Six extra headers, six drains, exact accounting. `Enroll result:
 enroll-completed` — five stages plus two retry-scans, print saved.
 
+**The drain has to cover open too.** The first `fprintd-verify` after a
+completed enrollment failed with `unrecognised FPC chip ID 0x6400` — and
+0x6400 is 25600, the image-length field of a capture header being decoded as
+a chip ID. The extra image survives a close/open cycle, so the reply to
+Get Chip ID at open time was a stale header. `OPEN_DRAIN` now runs before it.
+
+That failure also showed a gap worth closing generally: the driver believed
+a reply that did not acknowledge the command it had sent. Replies carry
+`status = 0x1000 | opcode` precisely so that can be checked, and the chip-ID
+path now rejects a mismatch with "desynchronised reply" instead of decoding
+whatever bytes arrived.
+
 **Still open: where the extra image comes from.** It did not reproduce over
 plain libusb in 21 captures, including four paced to match libfprint's own
 ~7.5ms/packet drain, and a bare read after a capture with the finger held
