@@ -59,6 +59,19 @@
  * 412 stream packets, so the cap is set above that with room to spare; the
  * timeout only has to be long enough for a packet that is already queued to
  * come back, not for the sensor to produce anything. */
+/* NBIS's block-based minutiae detector works on a fixed 8px grid, so on a
+ * small sensor the ridge structure is averaged away before it can be seen.
+ * libfprint's other small square press sensors enlarge before handing the
+ * image over -- aes4000 (96x96) by 3, aes3500 (128x128) by 2, both with the
+ * comment that it is "to make the image big enough for NBIS to process
+ * reliably". At 160x160 this sensor is the largest of the three, so 2 puts
+ * it at 320x320, comparable to what those two deliver.
+ *
+ * Measured effect on a real capture: 7 minutiae at 1x, 67 at 2x. Detection
+ * below MIN_COMPUTABLE_BOZORTH_MINUTIAE (10) is what made every comparison
+ * score exactly 0 -- see ../libfprint-driver/README.md. */
+#define FPC_ENLARGE_FACTOR 2
+
 #define FPC_DRAIN_TIMEOUT_MS 50
 #define FPC_DRAIN_MAX_PACKETS 512
 #define FPC_CAPTURE_COOLDOWN_MS 3000
@@ -306,24 +319,23 @@ deliver_image (FpDevice *dev)
   FpiDeviceFpc1021 *self = FPI_DEVICE_FPC1021 (dev);
   FpImageDevice *idev = FP_IMAGE_DEVICE (dev);
   FpImage *img = fp_image_new (self->width, self->height);
+  FpImage *enlarged;
 
   memcpy (img->data, self->image_buf, self->image_len);
 
+  enlarged = fpi_image_resize (img, FPC_ENLARGE_FACTOR, FPC_ENLARGE_FACTOR);
+  g_object_unref (img);
+
   /* Scan resolution, used by NBIS to size the neighbourhood it scores each
    * minutia's reliability over (RADIUS_MM * ppmm in mindtct/quality.c).
-   * Left unset it is 0.0, collapsing that radius to zero pixels, so every
-   * minutia is scored over an empty neighbourhood. The FPC capacitive
-   * family is specified at 508 dpi; worth re-checking against the datasheet
-   * if matching stays weak.
-   *
-   * Set on its own here, deliberately: an earlier attempt changed this and
-   * FPI_IMAGE_PARTIAL together and enrollment stopped accepting any stage,
-   * which left it unknown which of the two did it. This one should not be
-   * able to -- it affects reliability scoring, not how many minutiae are
-   * found. If enrollment still completes, that is confirmed. */
-  img->ppmm = 508.0 / 25.4;
+   * Left unset it is 0.0, collapsing that radius to zero pixels. The FPC
+   * capacitive family is specified at 508 dpi, and the ridge period measured
+   * on real captures is 10px = 0.50mm at that scale, which is the normal
+   * human value -- so 508 dpi is confirmed, not assumed. Scaled by the
+   * enlargement so the radius stays the same physical distance. */
+  enlarged->ppmm = (508.0 / 25.4) * FPC_ENLARGE_FACTOR;
 
-  fpi_image_device_image_captured (idev, img);
+  fpi_image_device_image_captured (idev, enlarged);
   fpi_image_device_report_finger_status (idev, FALSE);
 
   g_clear_pointer (&self->image_buf, g_free);
