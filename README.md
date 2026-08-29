@@ -77,13 +77,14 @@ See [`tools/README.md`](tools/README.md).
 - [x] Port to a proper libfprint `FpImageDevice` driver
 - [x] Diagnostic tracing + interactive probe (`tools/`) for investigating
       sensor behaviour over time
-- [ ] Root-cause the wedge: the sensor stops answering after a handful of
-      captures until a full USB reset, which aborts any in-progress
-      enrollment — the blocker before this driver is usable day to day
+- [x] Root-cause and fix the wedge: the sensor emits a second, unrequested
+      image after most captures, which desynchronised the 1:1 reply queue.
+      The driver now drains the endpoint before each capture, and
+      `fprintd-enroll` completes all five stages
 - [ ] Image-quality / finger-presence checks (the Windows driver's logic for
       this has been identified but not yet ported — see `PROTOCOL.md`)
 - [ ] Tune the "await finger" retry/cooldown timing against extended real use
-- [ ] Test enroll/verify via `fprintd`, not just raw capture
+- [x] Test enroll via `fprintd` — completes; verify still to be exercised
 - [ ] Upstream to libfprint and linux-surface
 
 Contributions and testing on other Type Cover / FPC-chip revisions welcome —
