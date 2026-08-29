@@ -115,6 +115,57 @@ The real lever is likely upstream of all this: 11 minutiae is thin, bozorth3
 needs overlap between two sets, and nothing currently stops a poor frame
 entering the template. That is the image-quality gating below.
 
+### Why verification returns no match: the bozorth3 floor
+
+`fprintd-verify` fails with `score 0/24` on **every** comparison — 25 of 25
+across five attempts, never a low score, always exactly zero. The reason is
+in `nbis/include/bozorth.h`:
+
+```c
+#define MIN_COMPUTABLE_BOZORTH_MINUTIAE 10
+```
+
+`bz_match_score()` returns `ZERO_MATCH_SCORE` without attempting a
+comparison if *either* side has fewer than 10 minutiae. The stored template
+holds five prints with 7, 5, 8, 2 and 7 minutiae; a verification image
+carries about 8. Every comparison is short-circuited before matching starts.
+
+So `bz3_threshold` is irrelevant here — the score is never computed — and
+this is not a question of poor overlap between prints. The sensor simply
+does not clear the floor.
+
+Measured minutiae per capture, ten samples (`tools/fpc_minutiae.c`):
+
+```
+11, 8, 8, 8, 8, 7, 0, 0, 0     one of ten reaches 10
+```
+
+Three placements yielded *no* minutiae at all. Three captures of one
+unmoved finger gave 8, 8, 8 with positions stable to within a few pixels,
+so extraction is repeatable and these are real features, not noise — there
+are just very few of them. 160x160 at 508 dpi is 8x8mm, and ~8 minutiae is
+about what that area of a finger holds.
+
+Ruled out along the way: contrast processing (normalize, equalize,
+auto-level all leave the count unchanged) and a resolution mismatch — the
+ridge period measures 10px, i.e. 0.50mm at 508dpi, which is the normal human
+value and confirms both the scale NBIS assumes and the `ppmm` set above.
+
+Upscaling, as `elanspi.c` does with `fpi_image_resize (img, 2, 2)`, changes
+counts wildly and inconsistently: one image went 7 -> 67 minutiae at 2x,
+another 11 -> 2 at 3x. Interpolation cannot add information, so most of that
+is likely spurious. **Counting minutiae is the wrong measurement** — false
+minutiae inflate the count and hurt matching. What matters is whether two
+captures of the same finger score against each other, and that needs an
+offline matching harness (libfprint's `virtual-image` driver, not currently
+built here) rather than an enroll/verify cycle against a real finger.
+
+Where this leaves the driver: capture and enrollment work; verification
+cannot until captures reliably clear 10 minutiae. Image-quality gating would
+remove the zero-minutiae frames and the 2-minutia print now in the template,
+which is necessary but may not be sufficient, since the best sample seen is
+11.
+
 Also not yet done:
 - The "await finger" retry-loop timing (`FPC_RETRY_DELAY_MS`,
   `FPC_CAPTURE_COOLDOWN_MS`, the 3000ms read timeout in
