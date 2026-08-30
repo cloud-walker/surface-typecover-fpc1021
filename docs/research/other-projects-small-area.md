@@ -49,7 +49,7 @@ Three findings contradict or sharpen the previous note's ranking:
    ~45% for every matcher tried, including BLPOC ... Datasets for this device
    have to be collected with natural, repeated placement or the results are
    meaningless" ([INFORME-MR572.md][informe]). Our bench's next dataset has to be
-   designed around that.
+   designed around that. **Since done** — see the update below.
 
 On the negative side, and stated plainly: **nobody patches bozorth3.** A GitHub
 code search for `minminutiae` returns zero results; five sampled libfprint forks
@@ -60,7 +60,63 @@ non-NBIS alike, returns max-over-templates. And **nobody else is working on this
 device**: `045e:09c2` appears in no code on GitHub outside this repository, and
 is not even on libfprint's unsupported-devices wiki.
 
-Ranked portability is in [section 5](#5-what-is-actually-portable-cheapest-first).
+Ranked portability is in [section 5](#5-what-is-actually-portable-cheapest-first),
+and what has happened to that ranking since is in
+[the update](#update-what-master-settled-after-this-note-was-researched) directly
+below.
+
+---
+
+## Update: what master settled after this note was researched
+
+This note was researched against `96c591b` (#5). By the time it landed,
+`origin/master` was at `a5afd1b` (#22) — six commits of measurement done in
+parallel worktrees, against a far larger capture set than existed when section 5
+was written. The survey of other projects is unaffected; the *ranking* is not.
+Recorded here rather than by editing section 5, so that what the sources said
+stays separable from what this project then measured.
+
+**Row 1 (rebuild the dataset) is done.** #18 (`a625642`) and #22 (`a5afd1b`)
+collected 42 captures across five fingers with natural, repeated placement —
+"placed as if unlocking a laptop rather than deliberately varied" — giving **314
+genuine and 1408 impostor pairs**. That is the protocol [INFORME-MR572.md][informe]
+demands, arrived at independently. The gate this note called blocking is open.
+
+**Row 10 (do not tune bozorth3) is contradicted by measurement.** #6 (`7fd0981`)
+added `libfprint-driver/bozorth-floor.patch`, restoring NIST's runtime control of
+the minutia floor; #22 then measured, at 1x with everything else fixed, **AUC
+0.792 at floor 4 against 0.645 at floor 10**. The floor is the enabling change,
+not a dead end. The reasoning in row 10 was sound about the *ecosystem* — nobody
+patches bozorth3, and that survey stands — but "nobody does it" was never
+evidence about what works on this sensor, and it should not have been ranked as
+if it were.
+
+**Row 3 (percentile normalisation instead of the unsharp mask) is superseded.**
+#22 measured the raw 1x frame as the best input of the group: sharpening does not
+help at 1x at all. The right pipeline here is not a gentler filter but none, so
+the question of *which* filter no longer arises.
+
+**The metric changed.** #18 moved from d' to AUC, because on weak configurations
+most scores are exactly zero, which shrinks the standard deviations and inflates
+d'. The **d' 0.26 that this note's Summary and section 5 argue from is therefore
+not the current figure of merit**; the comparable numbers are AUC 0.563 for the
+configuration shipped at the time and **AUC 0.802 (TAR@FAR1% 18%)** at 1x, no
+sharpening, floor 4.
+
+**The driver now refuses verification by construction.** #20 (`63e1e55`) found
+that on well-placed frames the shipped `bz3_threshold` of 24 accepted 97% of
+genuine attempts *and 92% of impostors* — the apparent safety had come from poor
+captures scoring under it, not from the threshold. #21 (`32dea3c`) set
+`bz3_threshold` to `G_MAXINT`.
+
+**What still stands, and is now cheaper than this note assumed.** Row 5 — the NCC
+matcher — remains untried, and it was ranked behind a prerequisite that has since
+been satisfied: the dataset exists, and `fpc_bench` has grown per-subject labels,
+per-class statistics and AUC. One convergence is worth flagging, because the two
+lines of work reached it independently: master measured the **raw** frame as the
+best input, and NCC consumes raw pixels through a local-mean high-pass rather
+than minutiae extracted from a sharpened image. Rows 6, 8 and 9 are untouched by
+any of the above.
 
 ---
 
@@ -467,7 +523,7 @@ returns zero code hits.
 | [`synaspi`][synareadme] | Synaptics SYNA8002 | 144x40 (~14.8 mm², my conversion) | NCC on locally-normalised images | genuine floor +0.4307, impostor max +0.3402 over 21 impostor views | MIT |
 | [OpenAFIS][openafis] | n/a (matcher only) | n/a | minutiae triplets | test suite "30%"; no published EER | BSD-2-Clause |
 | [FingerJetFX OSE][fjfx] | n/a (extractor only) | n/a | — (MINEX-compliant extractor) | MINEX compliance claimed for the DigitalPersona contribution | LGPL-**3**-or-later |
-| **this driver** | FPC1021 | 160x160 @ 508 dpi (64 mm²) | NBIS/bozorth3 | **d' 0.26**, 28 pairs | LGPL-2.1-or-later |
+| **this driver** | FPC1021 | 160x160 @ 508 dpi (64 mm²) | NBIS/bozorth3 | **d' 0.26**, 28 pairs (superseded: AUC 0.563 over 1408 impostor pairs — see the update) | LGPL-2.1-or-later |
 
 Note on the FT9201's size: [!572][mr572] describes it as "64×80 pixels" with
 "native resolution (~250 DPI)", while [!646][mr646] calls it "a 3×4 mm sensor".
@@ -814,6 +870,9 @@ ecosystem.
 Every row is a hypothesis with a source, not a promised gain. The measurement
 that gates all of them is still the one the previous note named: the impostor set
 is 28 pairs from two images, and nothing below is decidable until that grows.
+**That has since happened** — 314 genuine and 1408 impostor pairs on master — so
+row 1 is complete and rows 3 and 10 have been measured. See
+[the update](#update-what-master-settled-after-this-note-was-researched).
 
 | # | change | source | effort | honest verdict |
 |---|---|---|---|---|
