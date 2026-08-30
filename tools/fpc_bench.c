@@ -463,6 +463,35 @@ dist_at_or_above (const dist *d, gint t)
   return n;
 }
 
+/* Probability that a random genuine pair outscores a random impostor pair,
+ * with ties splitting the credit -- the area under the ROC curve, computed
+ * directly rather than through a curve.
+ *
+ * d' assumes two Gaussians, and these distributions are not: below the
+ * bozorth floor, and on a weak configuration generally, most scores are
+ * exactly zero. A pile of ties at zero shrinks the standard deviations and
+ * inflates d' -- 1x enlargement scores d' 0.28 while accepting 11% of
+ * genuine attempts, which is not a better configuration, only a more
+ * degenerate one. AUC has no distributional assumption and treats those
+ * ties honestly: 0.5 is chance.
+ */
+static gdouble
+auc (const dist *gen, const dist *imp)
+{
+  gdouble wins = 0.0;
+
+  if (!gen->n || !imp->n) return 0.5;
+
+  for (gint i = 0; i < gen->n; i++)
+    for (gint j = 0; j < imp->n; j++)
+      {
+        if (gen->scores[i] > imp->scores[j]) wins += 1.0;
+        else if (gen->scores[i] == imp->scores[j]) wins += 0.5;
+      }
+
+  return wins / ((gdouble) gen->n * imp->n);
+}
+
 static void
 report_separation (const dist *gen, const dist *imp, gint threshold)
 {
@@ -483,8 +512,10 @@ report_separation (const dist *gen, const dist *imp, gint threshold)
       return;
     }
 
-  printf ("\n  d' = %.2f", pooled > 0.0 ? (mg - mi) / pooled : 0.0);
+  printf ("\n  d'  = %.2f", pooled > 0.0 ? (mg - mi) / pooled : 0.0);
   printf ("   (usable biometrics sit above 3)\n");
+  printf ("  AUC = %.3f", auc (gen, imp));
+  printf ("   (0.5 is chance; d' assumes Gaussians, AUC does not)\n");
 
   /* Sweep every threshold the scores actually reach. The best operating
    * point is the one maximising genuine-accept minus false-accept: with
