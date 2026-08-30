@@ -819,34 +819,16 @@ about the same size as widening the translation radius by a comparable amount
 from "a larger search raises every maximum". Recorded as a small ambiguous
 gain, not a mechanism.
 
-#### Measuring the displacement directly, and what it overturns
+#### Displacement within a press: what is measured, and what is not
 
-The section below was written as a retraction of the ghost-frame work's
-misalignment reading, on the strength of grey-level magnitudes. The direct
-measurement has since been made, and it overturns the retraction rather than
-the original claim. Both are kept, in the order they happened, because the
-sequence is the point: a magnitude argument was never able to settle a
-question about geometry, and it took the offset measurement to say anything.
+Two numbers are measurements and stand on their own. What they *mean* rested,
+three times running, on an interval nobody had measured — so the readings are
+recorded in the order they failed, because the sequence is the whole lesson.
 
-**First, the premise both accounts rested on is wrong.** The ghost is not
-captured milliseconds after its frame. The right-index collection is the first
-with per-file microsecond timestamps, and they give:
-
-| frame | ghost | interval |
-|---|---|---|
-| 1788118850954741 | 1788118854043685 | 3.089 s |
-| 1788118854856739 | 1788118857944937 | 3.088 s |
-| 1788118858716681 | 1788118861798911 | 3.082 s |
-
-Constant to within 7 ms, which fits the ~1.59 s acquisition time in
-[`../PROTOCOL.md`](../PROTOCOL.md) for two acquisitions back to back.
-Consecutive presses in the same enrolment are 3.4-4.8 s apart, so **a ghost
-sits nearly as far from its frame in time as the next press does.**
-
-**Second, the offsets on the pairs that actually correlate are large.** The
-score has to be read alongside the offset, because a large peak offset is also
-what no alignment looks like — impostor pairs peak at a median of 16.1 px
-precisely because the peak lands wherever the search box ends:
+**Measured.** The search returns its peak offset for free, and the score has to
+be read alongside it: a large peak offset is also what the absence of alignment
+looks like, since impostor pairs peak at a median of 16.1 px precisely because
+the peak lands wherever the search box ends.
 
 | pair | NCC | peak offset |
 |---|---|---|
@@ -858,75 +840,47 @@ precisely because the peak lands wherever the search box ends:
 
 The three right-index pairs sit well above the genuine population mean of
 0.326, so those peaks are true alignments. The five older pairs sit at or below
-the impostor mean and their offsets carry no information; they are listed so
-that the n is visible rather than implied.
+the impostor mean and carry no information; they are listed so the n stays
+visible. **A frame and its ghost are displaced by 15-24 px, against a
+between-press median of 1.0 px over 314 pairs.**
 
-So on the three trustworthy pairs, **within-press displacement is 15-24 px
-against a between-press median of 1.0 px.** That is not a paradox once the
-interval is right: over a three-second hold the finger drifts about a
-millimetre, while between deliberate presses this subject re-targets to within
-a pixel. Sustained-contact drift and placement repeatability are different
-quantities, and only the second one is what a matcher's search radius has to
-cover.
+**Not measured: the time between the two acquisitions.** Three readings of that
+interval have now been offered and all three were unsupported:
 
-15-24 px is more than a full ridge period at 10 px, so averaging a frame with
-its ghost is destructive by misalignment after all. The ghost-frame reading was
-closer to right than the retraction below; what was wrong in it was
-"milliseconds", and the grey-level argument that replaced it could not settle
-the question in either direction.
+1. *Milliseconds apart, within one unbroken press.* An assumption, never
+   measured, and the basis for reading the averaging failure as misalignment.
+2. *Not displacement at all.* Within-press grey-level differences (49.7, 54.5)
+   sit at or below the between-press median for the same finger and session
+   (min 44.8, median 57.6, max 69.7; right index between-press 28.0-42.7), so a
+   ~50 grey-level difference is simply what two acquisitions of this finger look
+   like. Sound as far as it goes — but a magnitude cannot settle a question
+   about geometry, and the offsets above say the opposite.
+3. *Three seconds apart, so the finger drifts a millimetre under sustained
+   contact.* The right-index collection carries microsecond timestamps and a
+   ghost is written 3.082-3.089 s after its frame. That figure is
+   **`FPC_CAPTURE_COOLDOWN_MS`** — `fpc1021.c:114`, applied at
+   `fpc1021.c:825` — plus about 90 ms of drain and scheduling. It is constant
+   to 15 ms across all six pairs because it is a hardcoded delay, not because a
+   hold reproduces to 15 ms, and its resemblance to two 1.59 s acquisitions is
+   coincidence.
 
-Not claimed: n is 3 on the strong pairs, one subject, one session, and the
-older sets cannot corroborate because they do not correlate. Displacement being
-*large enough* to explain the averaging failure is not evidence that it *causes*
-it — but it is more than the grey-level difference was ever able to say.
+The reason the write time cannot date the acquisition is the drain itself. The
+sensor produces the extra image and it then **sits in the IN endpoint** until
+the next capture cycle drains it — that is what the drain exists for, and why
+it once survived a close/open cycle and got decoded as a chip ID. So the write
+time says when the ghost was read out, not when it was taken, and the true
+interval is anywhere from milliseconds to the cooldown.
 
-#### The retraction this replaced, kept for the record
+**The experiment that would settle it** is one constant, one rebuild, one
+enrolment: set `FPC_CAPTURE_COOLDOWN_MS` to 500 and recollect. If the offsets
+stay at 15-24 px the second acquisition happens early, and drift over seconds is
+not the mechanism. If they shrink toward 1 px it happens late, just before the
+drain, and the drift reading is right with the interval corrected. Until then
+the displacement is real and its cause is open.
 
-§"The capture protocol, and the pipeline it exposes as harmful" reports that
-averaging a frame with the ghost captured milliseconds later within one
-unbroken press makes matching worse, and attributes it to misalignment within
-the press, inferred from a mean difference of 42 grey levels between the two.
-**That inference was wrong and is withdrawn.** The control that settles it:
-
-| | pixel difference |
-|---|---|
-| left index, within-press (2 verified pairs) | 49.7, 54.5 |
-| left index, between-press (15 pairs) | min 44.8, median 57.6, max 69.7 |
-| right index, between-press (45 pairs) | min 28.0, median 36.4, max 42.7 |
-
-Within-press differences sit at or below the between-press median for the same
-finger in the same session, so a ~50 grey-level difference is simply what two
-acquisitions of this finger look like. Combined with the offset measurement
-above — between-press displacement is about 1 px — the same magnitude appears
-where displacement is known to be tiny. The grey-level difference never implied
-displacement; the inference took a magnitude for a geometry.
-
-The arithmetic agrees. Ridge period here is 10 px, so a 1 px offset is a tenth
-of a period and averaging two patterns that far apart costs about
-cos(18°) ≈ 5% of amplitude. The measured cost of averaging two healthy verified
-pairs is roughly 25% of tile contrast (189.4 and 195.0 → 142.4; 201.1 and
-213.0 → 164.8), five times what 1 px can account for.
-
-What differs between two acquisitions is therefore dominated by a decorrelated,
-noise-like component rather than by geometry. That explains the averaging
-failure as contrast dilution rather than blur, and it is the same statement as
-the flat radius sweep: if displacement is not the problem, widening the search
-cannot be the fix.
-
-**That paragraph is what the direct measurement above overturned.** The
-grey-level comparison was sound as far as it went — within-press differences
-really do sit at the between-press median — but it licensed a conclusion about
-geometry that only an offset measurement could support, and the offsets say the
-opposite. The flat radius sweep still stands on its own evidence: between-press
-displacement is 1 px, so widening the search still cannot be the fix for
-*matching*. It is within-press drift that is large, and nothing in the matching
-path ever compares a frame with its own ghost.
-
-It is also why the deliberately-varied batch cannot be rescued. NCC is at chance
-there — AUC 0.543 at radius 2 and 0.538 at 20, against NBIS's 0.563 — and that
-set differs from the natural one in frame quality (contrast 46-126 against
-98-139), not in placement. No matcher recovers signal the capture did not
-contain.
+None of this disturbs the matching result. Between-press displacement is 1.0 px,
+which is why the radius sweep is flat, and nothing in the matching path ever
+compares a frame with its own ghost.
 
 #### What this does not establish
 
