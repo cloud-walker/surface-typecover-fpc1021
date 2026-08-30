@@ -273,6 +273,42 @@ cc -O2 -Wall -std=gnu11 tools/fpc_bench.c -o build/fpc_bench \
 
 Collect samples with `sudo ./build/fpc_capture shot1.bin`, one per press.
 
+## Collecting the ghost frame
+
+The driver drains 413 packets before most captures — one capture header plus 412
+stream packets, a complete unrequested 160x160 frame. Where it comes from is
+still unexplained and the frame itself has never been looked at: it has only
+been counted and dropped.
+
+It does not reproduce over plain libusb (21 captures, including four paced to
+libfprint's own drain rate), so `fpc_probe` cannot collect it. The place it
+demonstrably happens is libfprint's own path, so the collection lives in the
+driver, behind an environment variable:
+
+```sh
+sudo mkdir -p /etc/systemd/system/fprintd.service.d
+sudo tee /etc/systemd/system/fprintd.service.d/ghost.conf <<'EOF'
+[Service]
+Environment=FPC1021_GHOST_DIR=/path/to/a/writable/dir
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart fprintd
+```
+
+Then drive the device normally — `fprintd-enroll` is the reliable producer,
+since the drain fires before each of its stages — and the frames land as
+`ghost-<pid>-<n>.bin`, raw 160x160 grayscale, the same format `fpc_capture`
+writes. `journalctl -u fprintd | grep ghost` confirms each write.
+
+Unset, the variable costs one comparison per drained packet and changes nothing;
+the frame is discarded exactly as before, it is just written down first.
+
+Two questions it can answer. Whether the ghost is a real second view of the
+finger at all — which would finally explain it — and, if it is, whether
+averaging it with the requested frame helps. Two frames of one press cover the
+same skin so averaging cannot add area, but it can average away sensor noise,
+and noise amplified into minutiae that differ between two views of one finger is
+the failure this driver's matching actually has.
+
 ## Trace format
 
 Every transfer is recorded on both sinks: a human-readable line on stderr,

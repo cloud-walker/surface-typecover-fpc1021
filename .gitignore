@@ -9,3 +9,4 @@ pkg-libfprint/src/
 pkg-libfprint/*.pkg.tar.zst
 pkg-libfprint/*.log
 usbmon-*.txt
+ghost/

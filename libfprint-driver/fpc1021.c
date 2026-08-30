@@ -138,6 +138,16 @@ struct _FpiDeviceFpc1021
    * them, because this protocol pairs reads and writes 1:1. Counted per
    * capture so an unusual drain gets reported once rather than silently. */
   guint    drained;
+
+  /* The drained packets are a whole unrequested image, and nobody has ever
+   * looked at one. When FPC1021_GHOST_DIR is set they are reassembled the
+   * same way a real capture is and written there as raw frames. Off by
+   * default and never affects a capture either way -- the frame is still
+   * discarded, it is just written down first. See fpc_ghost_feed(). */
+  guint8  *ghost_buf;
+  gsize    ghost_len;
+  gsize    ghost_have;
+  guint    ghost_seq;
 };
 
 G_DECLARE_FINAL_TYPE (FpiDeviceFpc1021, fpi_device_fpc1021, FPI,
@@ -330,6 +340,7 @@ dev_close (FpImageDevice *idev)
   FpiDeviceFpc1021 *self = FPI_DEVICE_FPC1021 (idev);
 
   g_clear_pointer (&self->image_buf, g_free);
+  g_clear_pointer (&self->ghost_buf, g_free);
 
   g_usb_device_release_interface (fpi_device_get_usb_device (FP_DEVICE (idev)),
                                   FPC_USB_INTERFACE, 0, &error);
@@ -725,6 +736,82 @@ capture_stream_cb (FpiUsbTransfer *transfer, FpDevice *dev,
   fpi_ssm_jump_to_state (transfer->ssm, CAPTURE_STREAM);
 }
 
+/* Reassembles a drained image, when asked to.
+ *
+ * The drain throws away 413 packets before most captures: one capture header
+ * plus 412 stream packets, which is a complete unrequested 160x160 frame.
+ * Where it comes from is still unexplained, and the frame itself has never
+ * been examined -- it has only ever been counted and dropped.
+ *
+ * It is worth examining for a second reason. Two frames of one press cover
+ * the same skin, so averaging them cannot add area, but it can average away
+ * sensor noise -- and noise amplified into minutiae that differ between two
+ * views of a finger is the failure this driver's matching actually has. The
+ * offline bench can answer whether that helps, given the frames.
+ *
+ * Set FPC1021_GHOST_DIR to a writable directory to collect them. Unset, this
+ * costs one comparison per drained packet and changes nothing.
+ */
+static void
+fpc_ghost_feed (FpiDeviceFpc1021 *self, const guint8 *buf, gint len)
+{
+  const gchar *dir = g_getenv ("FPC1021_GHOST_DIR");
+
+  if (!dir || len <= 0)
+    return;
+
+  /* A capture header starts a frame; anything else before one is some other
+   * command's stale reply and is not ours to interpret. */
+  if (!self->ghost_buf)
+    {
+      guint16 status, length;
+
+      if (len < 6)
+        return;
+      status = buf[0] | (buf[1] << 8);
+      if (status != (0x1000 | CMD_CAPTURE))
+        return;
+
+      length = buf[4] | (buf[5] << 8);
+      if (length == 0 || length > (guint16) (self->width * self->height))
+        return;
+
+      self->ghost_len = length;
+      self->ghost_buf = g_malloc0 (length);
+      self->ghost_have = MIN ((gsize) (len - 6), self->ghost_len);
+      memcpy (self->ghost_buf, buf + 6, self->ghost_have);
+    }
+  else
+    {
+      /* Continuation packets carry a 2-byte marker, as in capture_stream_cb. */
+      gsize usable = len > 2 ? (gsize) (len - 2) : 0;
+
+      usable = MIN (usable, self->ghost_len - self->ghost_have);
+      if (usable)
+        memcpy (self->ghost_buf + self->ghost_have, buf + 2, usable);
+      self->ghost_have += usable;
+    }
+
+  if (self->ghost_have < self->ghost_len)
+    return;
+
+  {
+    g_autofree gchar *path = g_strdup_printf ("%s/ghost-%u-%u.bin", dir,
+                                              (guint) getpid (), self->ghost_seq++);
+    g_autoptr(GError) error = NULL;
+
+    if (g_file_set_contents (path, (const gchar *) self->ghost_buf,
+                             (gssize) self->ghost_len, &error))
+      fp_warn ("fpc1021: wrote ghost frame %s (%zu bytes)", path, self->ghost_len);
+    else
+      fp_warn ("fpc1021: could not write ghost frame: %s", error->message);
+  }
+
+  g_clear_pointer (&self->ghost_buf, g_free);
+  self->ghost_have = 0;
+  self->ghost_len = 0;
+}
+
 /* Empties the IN endpoint before starting a capture.
  *
  * Root cause this defends against (2026-08-29, usbmon trace of a real
@@ -767,6 +854,8 @@ fpc_drain_cb (FpiUsbTransfer *transfer, FpDevice *dev,
       fpi_ssm_next_state (transfer->ssm);
       return;
     }
+
+  fpc_ghost_feed (self, transfer->buffer, (gint) transfer->actual_length);
 
   self->drained++;
   if (self->drained >= FPC_DRAIN_MAX_PACKETS)
@@ -876,6 +965,12 @@ start_capture (FpImageDevice *idev)
   self->image_len = 0;
   self->image_have = 0;
   self->drained = 0;
+
+  /* A drain that stopped mid-frame leaves a partial ghost behind; it belongs
+   * to the previous capture and must not be continued into this one. */
+  g_clear_pointer (&self->ghost_buf, g_free);
+  self->ghost_len = 0;
+  self->ghost_have = 0;
 
   ssm = fpi_ssm_new (FP_DEVICE (idev), capture_run_state, CAPTURE_NUM_STATES);
   fpi_ssm_start (ssm, capture_sm_complete);
