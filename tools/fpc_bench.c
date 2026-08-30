@@ -104,6 +104,8 @@ typedef struct {
   gdouble     reliability;    /* median over the frame's minutiae */
   gdouble     contrast;
   gboolean    gated;     /* rejected by the blank-frame gate */
+  guint8     *raw;       /* the frame as captured, before any sharpening */
+  gfloat    **hp;        /* high-passed views, one per search angle */
 } sample;
 
 /* Unsharp mask, applied to the raw frame before enlargement.
@@ -254,6 +256,203 @@ fpc_resize_catrom (const guint8 *src, gint sw, gint sh, gint factor, guint8 *dst
     }
 }
 
+/* ---------------------------------------------------------------------
+ * Normalised cross-correlation, as an alternative to matching minutiae.
+ *
+ * Why this exists: at 160x160 the frame carries 5-10 minutiae raw, where
+ * bozorth3 wants ~12 and a full-size finger gives 40-80, and #22 measured the
+ * whole minutiae pipeline at AUC 0.802 on 314 genuine and 1408 impostor pairs
+ * -- better than the 0.563 that shipped, and still not an authenticator. Every
+ * open-source project that got a sub-100mm2 press sensor working stopped
+ * handing images to NBIS and matched the image directly; see
+ * docs/research/other-projects-small-area.md. The one measured result in that
+ * survey, libfprint MR !646 on a FocalTech FT9201 at 64x80, reached EER 0.07%
+ * with the code below in about 120 lines, and its dominant parameter was not
+ * any image-processing knob but the alignment search radius: EER 8.83% at
+ * radius 3 against 0.07% at 16, because finger placement moves ~16 px between
+ * presses and a +-3 px search never finds the overlap.
+ *
+ * This project has independent evidence for that mechanism from the other
+ * direction. Two acquisitions milliseconds apart within one unbroken press --
+ * a frame and the "ghost" the drain discards -- differ by a mean of 42 grey
+ * levels per pixel, the same order as two separate presses at 25-51. So the
+ * displacement is present even without lifting the finger, and a pixel-wise
+ * operation cannot cope with it while a shift search is built for exactly it.
+ *
+ * Feed this the RAW frame. #22 measured that the driver's own pipeline
+ * destroys signal here: enlargement and sharpening manufacture structure that
+ * is common to any frame from this sensor, which is why 1x unsharpened beats
+ * 2x sharpened. The high-pass below is the only preprocessing, and it plays
+ * the role sharpening was reaching for without inventing ridges.
+ */
+
+/* Local-mean subtraction. Removes the slowly-varying pressure/contact term so
+ * that correlation compares ridge structure rather than how hard the finger
+ * was pressed -- synaspi's note on the same operation puts it exactly that
+ * way. FT9201 inverts the frame first; that is a no-op here, because negating
+ * both images leaves their correlation unchanged. */
+static gfloat *
+ncc_highpass (const guint8 *src, gint w, gint h, gint window)
+{
+  gfloat *out = g_new (gfloat, (gsize) w * h);
+  const gint r = window / 2;
+
+  for (gint y = 0; y < h; y++)
+    for (gint x = 0; x < w; x++)
+      {
+        gint sum = 0, n = 0;
+
+        for (gint j = -r; j <= r; j++)
+          for (gint i = -r; i <= r; i++)
+            { sum += fpc_sample (src, w, h, x + i, y + j); n++; }
+
+        out[y * w + x] = (gfloat) src[y * w + x] - (gfloat) sum / n;
+      }
+
+  return out;
+}
+
+/* Correlation over the overlap at one integer offset. b is displaced by
+ * (dx, dy) relative to a, so a[x, y] meets b[x - dx, y - dy].
+ *
+ * The minimum-overlap guard is not optional: without it a two-pixel corner
+ * overlap scores 1.0 and wins the search outright. FT9201 requires half the
+ * frame; synaspi sets an absolute floor for the same reason. */
+static gdouble
+ncc_at (const gfloat *a, const gfloat *b, gint w, gint h,
+        gint dx, gint dy, gint min_overlap)
+{
+  const gint x0 = MAX (0, dx), x1 = MIN (w, w + dx);
+  const gint y0 = MAX (0, dy), y1 = MIN (h, h + dy);
+  gdouble sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+  gint n;
+
+  if (x1 <= x0 || y1 <= y0) return -1.0;
+  n = (x1 - x0) * (y1 - y0);
+  if (n < min_overlap) return -1.0;
+
+  for (gint y = y0; y < y1; y++)
+    {
+      const gfloat *pa = a + (gsize) y * w;
+      const gfloat *pb = b + (gsize) (y - dy) * w - dx;
+
+      for (gint x = x0; x < x1; x++)
+        {
+          const gdouble va = pa[x], vb = pb[x];
+
+          sa += va; sb += vb;
+          saa += va * va; sbb += vb * vb; sab += va * vb;
+        }
+    }
+
+  {
+    const gdouble ma = sa / n, mb = sb / n;
+    const gdouble ca = saa - n * ma * ma;
+    const gdouble cb = sbb - n * mb * mb;
+    const gdouble cab = sab - n * ma * mb;
+
+    if (ca <= 0.0 || cb <= 0.0) return -1.0;
+    return cab / sqrt (ca * cb);
+  }
+}
+
+/* Coarse-to-fine translation search: stride 2 over the whole radius, then
+ * +-1 around the winner. FT9201 measured this as nearly lossless against the
+ * exhaustive sweep -- mean score loss 0.004 over 70 pairs, and no genuine pair
+ * that cleared the threshold stopped clearing it -- for a third of the cost.
+ *
+ * Both published implementations search translation only. Neither rotates,
+ * neither estimates an angle first, and neither describes a finger guide; see
+ * ncc_angles below for how that assumption is tested here rather than
+ * inherited. */
+static gdouble
+ncc_search (const gfloat *a, const gfloat *b, gint w, gint h,
+            gint radius, gint min_overlap, gint *out_dx, gint *out_dy)
+{
+  gdouble best = -1.0;
+  gint bx = 0, by = 0;
+
+  for (gint dy = -radius; dy <= radius; dy += 2)
+    for (gint dx = -radius; dx <= radius; dx += 2)
+      {
+        const gdouble v = ncc_at (a, b, w, h, dx, dy, min_overlap);
+        if (v > best) { best = v; bx = dx; by = dy; }
+      }
+
+  for (gint dy = by - 1; dy <= by + 1; dy++)
+    for (gint dx = bx - 1; dx <= bx + 1; dx++)
+      {
+        const gdouble v = ncc_at (a, b, w, h, dx, dy, min_overlap);
+        if (v > best) { best = v; bx = dx; by = dy; }
+      }
+
+  if (out_dx) *out_dx = bx;
+  if (out_dy) *out_dy = by;
+  return best;
+}
+
+/* Catmull-Rom at a fractional position, for the rotation axis. The filter is
+ * the one fpc_resize_catrom already uses, and the reason is measured: swapping
+ * bilinear for Catmull-Rom at the same 2x moved the best score from 15 to 25
+ * with nothing else changed. That was inside the NBIS pipeline, which #22 has
+ * since abandoned, so it does not carry as a result -- it carries as a warning
+ * that interpolation on this sensor's frames is not neutral. */
+static gdouble
+fpc_sample_catrom (const guint8 *src, gint w, gint h, gdouble x, gdouble y)
+{
+  const gint ix = (gint) floor (x), iy = (gint) floor (y);
+  const gdouble tx = x - ix, ty = y - iy;
+  gdouble col[4];
+
+  for (gint k = 0; k < 4; k++)
+    col[k] = fpc_cubic (fpc_sample (src, w, h, ix - 1, iy - 1 + k),
+                        fpc_sample (src, w, h, ix + 0, iy - 1 + k),
+                        fpc_sample (src, w, h, ix + 1, iy - 1 + k),
+                        fpc_sample (src, w, h, ix + 2, iy - 1 + k),
+                        tx);
+
+  return fpc_cubic (col[0], col[1], col[2], col[3], ty);
+}
+
+/* Rotate about the frame centre.
+ *
+ * Note what happens at exactly 0 degrees: the source coordinates come out
+ * integral, Catmull-Rom at t = 0 returns the original sample, and the result
+ * is a bit-exact copy. So routing 0 through this path does NOT equalise the
+ * resampling cost across the angle axis, which is the obvious way to try to
+ * make the sweep fair -- 0 is free and every other angle is not, whatever path
+ * it takes. The cost is therefore measured rather than cancelled: sample the
+ * angle axis finely near zero, and any step between 0 and the first non-zero
+ * angle that does not continue as the angle grows is interpolation cost, not
+ * rotation. */
+static void
+fpc_rotate_catrom (const guint8 *src, gint w, gint h, gdouble degrees, guint8 *dst)
+{
+  const gdouble rad = degrees * G_PI / 180.0;
+  const gdouble c = cos (rad), s = sin (rad);
+  const gdouble cx = (w - 1) / 2.0, cy = (h - 1) / 2.0;
+
+  for (gint y = 0; y < h; y++)
+    for (gint x = 0; x < w; x++)
+      {
+        const gdouble ox = x - cx, oy = y - cy;
+        const gdouble sx =  c * ox + s * oy + cx;
+        const gdouble sy = -s * ox + c * oy + cy;
+        const gdouble v = fpc_sample_catrom (src, w, h, sx, sy);
+
+        dst[(gsize) y * w + x] = (guint8) CLAMP ((gint) (v + 0.5), 0, 255);
+      }
+}
+
+/* NCC configuration. Defaults track MR !646's tuned values, except the angle
+ * axis, which upstream does not have. */
+static gboolean ncc_mode = FALSE;
+static gint     ncc_radius = 16;
+static gint     ncc_window = 7;
+static gboolean ncc_show_offsets = FALSE;
+static gdouble *ncc_angles = NULL;   /* NULL means translation only */
+static gint     ncc_n_angles = 1;
+
 /* Mirrors fpc_frame_contrast() in the driver. */
 static gdouble
 frame_contrast (const guint8 *buf, gint width, gint height)
@@ -403,6 +602,29 @@ load_sample (sample *s, const char *path, const char *subject, gint w, gint h,
   s->contrast = frame_contrast (raw, w, h);
   s->gated = (gate > 0.0 && s->contrast < gate);
 
+  /* Kept before sharpening, because the NCC path wants the frame as the
+   * sensor delivered it -- see the note above ncc_highpass(). */
+  s->raw = g_memdup2 (raw, (gsize) w * h);
+  if (ncc_mode)
+    {
+      s->hp = g_new0 (gfloat *, ncc_n_angles);
+
+      if (!ncc_angles)
+        {
+          s->hp[0] = ncc_highpass (s->raw, w, h, ncc_window);
+        }
+      else
+        {
+          g_autofree guint8 *rot = g_new (guint8, (gsize) w * h);
+
+          for (gint k = 0; k < ncc_n_angles; k++)
+            {
+              fpc_rotate_catrom (s->raw, w, h, ncc_angles[k], rot);
+              s->hp[k] = ncc_highpass (rot, w, h, ncc_window);
+            }
+        }
+    }
+
   fpc_unsharp (raw, w, h);
 
   img = fp_image_new (w, h);
@@ -475,6 +697,43 @@ score_pair (sample *probe, sample *gallery)
 
   probe_len = bozorth_probe_init (p);
   return bozorth_to_gallery (probe_len, p, g);
+}
+
+/* The NCC counterpart of score_pair(), returning milli-NCC so that the
+ * distribution, AUC and threshold machinery below is shared between the two
+ * matchers unchanged and their numbers stay comparable pair for pair.
+ *
+ * The gallery is always searched unrotated and only the probe is turned,
+ * which is what a verification actually looks like: the stored template is
+ * fixed and the presented finger is whatever arrives. */
+static gint
+score_pair_ncc (sample *probe, sample *gallery, gint w, gint h,
+                gint *out_dx, gint *out_dy, gdouble *out_angle)
+{
+  const gint min_overlap = w * h / 2;
+  gdouble best = -1.0, ba = 0.0;
+  gint bx = 0, by = 0;
+
+  if (!probe->hp || !gallery->hp) return 0;
+
+  for (gint k = 0; k < ncc_n_angles; k++)
+    {
+      gint dx, dy;
+      const gdouble v = ncc_search (probe->hp[k], gallery->hp[0], w, h,
+                                    ncc_radius, min_overlap, &dx, &dy);
+
+      if (v > best)
+        {
+          best = v; bx = dx; by = dy;
+          ba = ncc_angles ? ncc_angles[k] : 0.0;
+        }
+    }
+
+  if (out_dx) *out_dx = bx;
+  if (out_dy) *out_dy = by;
+  if (out_angle) *out_angle = ba;
+
+  return (gint) lround (best * 1000.0);
 }
 
 /* Genuine and impostor score distributions, and what separates them.
@@ -569,6 +828,26 @@ auc (const dist *gen, const dist *imp)
   return wins / ((gdouble) gen->n * imp->n);
 }
 
+static int
+cmp_gint (const void *a, const void *b)
+{
+  const gint x = *(const gint *) a, y = *(const gint *) b;
+  return (x > y) - (x < y);
+}
+
+static gint
+dist_percentile (const dist *d, gdouble frac)
+{
+  g_autofree gint *copy = NULL;
+  gint idx;
+
+  if (d->n == 0) return 0;
+  copy = g_memdup2 (d->scores, sizeof (gint) * d->n);
+  qsort (copy, d->n, sizeof (gint), cmp_gint);
+  idx = (gint) (frac * (d->n - 1) + 0.5);
+  return copy[CLAMP (idx, 0, d->n - 1)];
+}
+
 static void
 report_separation (const dist *gen, const dist *imp, gint threshold)
 {
@@ -658,6 +937,8 @@ main (int argc, char **argv)
   gdouble gate = DEFAULT_GATE;
   GPtrArray *samples = g_ptr_array_new ();
   const char *subject = NULL;
+  gboolean threshold_set = FALSE;
+  dist off_gen = { 0 }, off_imp = { 0 };
   int i;
 
   for (i = 1; i < argc; i++)
@@ -665,7 +946,38 @@ main (int argc, char **argv)
       if ((!strcmp (argv[i], "-e") || !strcmp (argv[i], "--enlarge")) && i + 1 < argc)
         enlarge = atoi (argv[++i]);
       else if ((!strcmp (argv[i], "-t") || !strcmp (argv[i], "--threshold")) && i + 1 < argc)
-        threshold = atoi (argv[++i]);
+        { threshold = atoi (argv[++i]); threshold_set = TRUE; }
+      /* The NCC switches take effect at load time, so like -e and -s they
+       * must precede the captures they apply to. */
+      else if (!strcmp (argv[i], "-N") || !strcmp (argv[i], "--ncc"))
+        ncc_mode = TRUE;
+      else if ((!strcmp (argv[i], "-R") || !strcmp (argv[i], "--radius")) && i + 1 < argc)
+        ncc_radius = atoi (argv[++i]);
+      else if ((!strcmp (argv[i], "-W") || !strcmp (argv[i], "--window")) && i + 1 < argc)
+        ncc_window = atoi (argv[++i]);
+      else if (!strcmp (argv[i], "-O") || !strcmp (argv[i], "--offsets"))
+        ncc_show_offsets = TRUE;
+      /* -A MAX[:STEP] searches rotation as well as translation, over
+       * -MAX..+MAX degrees. Neither published NCC implementation rotates at
+       * all, so this is here to test that assumption rather than inherit it;
+       * omitting it searches translation only and resamples nothing. */
+      else if ((!strcmp (argv[i], "-A") || !strcmp (argv[i], "--angles")) && i + 1 < argc)
+        {
+          const char *spec = argv[++i];
+          gdouble maxdeg = atof (spec), step = 1.0;
+          const char *colon = strchr (spec, ':');
+
+          if (colon) step = atof (colon + 1);
+          if (maxdeg <= 0.0 || step <= 0.0)
+            {
+              fprintf (stderr, "-A wants MAX[:STEP] with both positive\n");
+              return 2;
+            }
+          ncc_n_angles = 2 * (gint) floor (maxdeg / step + 1e-9) + 1;
+          ncc_angles = g_new (gdouble, ncc_n_angles);
+          for (gint k = 0; k < ncc_n_angles; k++)
+            ncc_angles[k] = -maxdeg + k * step;
+        }
       else if ((!strcmp (argv[i], "-s") || !strcmp (argv[i], "--sigma")) && i + 1 < argc)
         unsharp_sigma = atof (argv[++i]);
       else if ((!strcmp (argv[i], "-a") || !strcmp (argv[i], "--amount")) && i + 1 < argc)
@@ -705,15 +1017,38 @@ main (int argc, char **argv)
 
   if (samples->len < 2)
     {
-      fprintf (stderr, "usage: %s [-e N] [-t N] [-g N] capture.bin capture.bin ...\n"
-                       "  (at least two captures are needed to score anything)\n", argv[0]);
+      fprintf (stderr,
+               "usage: %s [-e N] [-t N] [-g N] [-S label] capture.bin capture.bin ...\n"
+               "       %s -N [-R radius] [-W window] [-A MAX[:STEP]] [-O] ...\n"
+               "  (at least two captures are needed to score anything)\n"
+               "  -N matches raw frames by normalised cross-correlation instead of\n"
+               "     minutiae; -R sets the alignment search radius, -A adds a rotation\n"
+               "     axis, -O reports the peak offset per pair.\n", argv[0], argv[0]);
       return 2;
     }
 
-  printf ("enlarge %dx -> %dx%d   unsharp sigma %.2f amount %.2f   threshold %d   gate %.0f   floor %d\n\n",
-          enlarge, width * enlarge, height * enlarge,
-          unsharp_sigma, unsharp_amount, threshold, gate,
-          bozorth_min_computable_minutiae);
+  /* 0.50 is where MR !646 settled after review; as a milli-NCC integer that
+   * is 500. Nothing about 24 means anything to a correlation score. */
+  if (ncc_mode && !threshold_set)
+    threshold = 500;
+
+  if (ncc_mode)
+    {
+      printf ("NCC on raw %dx%d   high-pass %dx%d   radius +-%d   min overlap %d px",
+              width, height, ncc_window, ncc_window, ncc_radius, width * height / 2);
+      if (ncc_angles)
+        printf ("   angles %+.2f..%+.2f in %d steps",
+                ncc_angles[0], ncc_angles[ncc_n_angles - 1], ncc_n_angles);
+      else
+        printf ("   translation only");
+      printf ("\n   threshold %d milli-NCC (%.3f)   gate %.0f\n\n",
+              threshold, threshold / 1000.0, gate);
+    }
+  else
+    printf ("enlarge %dx -> %dx%d   unsharp sigma %.2f amount %.2f   threshold %d   gate %.0f   floor %d\n\n",
+            enlarge, width * enlarge, height * enlarge,
+            unsharp_sigma, unsharp_amount, threshold, gate,
+            bozorth_min_computable_minutiae);
 
   printf ("%-16s %-12s %9s %8s %6s %8s %s\n",
           "capture", "subject", "contrast", "minutiae", "kept", "med.rel", "");
@@ -735,6 +1070,10 @@ main (int argc, char **argv)
   printf ("\n");
 
   gint best = 0, matches = 0, pairs = 0;
+  const gint nsamp = (gint) samples->len;
+  g_autofree gint *off_dx = ncc_show_offsets ? g_new0 (gint, (gsize) nsamp * nsamp) : NULL;
+  g_autofree gint *off_dy = ncc_show_offsets ? g_new0 (gint, (gsize) nsamp * nsamp) : NULL;
+  g_autofree gdouble *off_ang = ncc_show_offsets ? g_new0 (gdouble, (gsize) nsamp * nsamp) : NULL;
   gdouble total = 0;
   dist genuine = { 0 }, impostor = { 0 };
   gboolean labelled = FALSE;
@@ -753,8 +1092,19 @@ main (int argc, char **argv)
           sample *gallery = g_ptr_array_index (samples, j);
           if (i == j) { printf ("     ."); continue; }
 
-          gint sc = score_pair (probe, gallery);
+          gint dx = 0, dy = 0;
+          gdouble ang = 0.0;
+          gint sc = ncc_mode
+                    ? score_pair_ncc (probe, gallery, width, height, &dx, &dy, &ang)
+                    : score_pair (probe, gallery);
           printf ("%6d", sc);
+
+          if (off_dx)
+            {
+              off_dx[(gsize) i * nsamp + j] = dx;
+              off_dy[(gsize) i * nsamp + j] = dy;
+              off_ang[(gsize) i * nsamp + j] = ang;
+            }
 
           if (probe->gated || gallery->gated) continue;
           pairs++;
@@ -766,8 +1116,20 @@ main (int argc, char **argv)
            * classified either way; counting it as genuine is precisely the
            * mistake this labelling exists to prevent. */
           if (probe->subject && gallery->subject)
-            dist_add (!strcmp (probe->subject, gallery->subject)
-                      ? &genuine : &impostor, sc);
+            {
+              const gboolean same = !strcmp (probe->subject, gallery->subject);
+
+              dist_add (same ? &genuine : &impostor, sc);
+
+              /* Peak displacement in tenths of a pixel. This is the
+               * measurement, not a by-product: the whole case for a shift
+               * search rests on how far the finger actually moves, and the
+               * search returns that for free. */
+              if (ncc_mode)
+                dist_add (same ? &off_gen : &off_imp,
+                          (gint) lround (10.0 * sqrt ((gdouble) dx * dx +
+                                                      (gdouble) dy * dy)));
+            }
         }
       printf ("\n");
     }
@@ -783,8 +1145,54 @@ main (int argc, char **argv)
             "impostor;\nseparation is the objective here, so label the "
             "fingers and re-run.\n");
 
+  if (ncc_mode && (off_gen.n || off_imp.n))
+    {
+      const dist *cls[2] = { &off_gen, &off_imp };
+      const char *names[2] = { "genuine", "impostor" };
+
+      printf ("\npeak alignment offset |(dx, dy)|, pixels\n\n");
+      printf ("  %-10s %7s %7s %8s %7s %7s\n",
+              "", "pairs", "mean", "median", "p90", "max");
+      for (gint c = 0; c < 2; c++)
+        {
+          const dist *d = cls[c];
+
+          if (!d->n) continue;
+          printf ("  %-10s %7d %7.1f %8.1f %7.1f %7.1f\n", names[c], d->n,
+                  dist_mean (d) / 10.0, dist_percentile (d, 0.50) / 10.0,
+                  dist_percentile (d, 0.90) / 10.0, dist_max (d) / 10.0);
+        }
+      printf ("\n  n is printed because it decides what these numbers can carry:\n"
+              "  a median over a handful of pairs is an indication, not a distribution.\n");
+    }
+
+  if (off_dx)
+    {
+      printf ("\nper-pair peak offset (row = probe, column = gallery)\n\n");
+      for (i = 0; i < nsamp; i++)
+        {
+          sample *probe = g_ptr_array_index (samples, i);
+
+          printf ("%2d %-13s", i, probe->name);
+          for (int j = 0; j < nsamp; j++)
+            {
+              if (i == j) { printf ("%12s", ".") ; continue; }
+              if (ncc_angles)
+                printf (" %+3d,%+3d@%+.1f", off_dx[(gsize) i * nsamp + j],
+                        off_dy[(gsize) i * nsamp + j],
+                        off_ang[(gsize) i * nsamp + j]);
+              else
+                printf ("  %+4d,%+4d", off_dx[(gsize) i * nsamp + j],
+                        off_dy[(gsize) i * nsamp + j]);
+            }
+          printf ("\n");
+        }
+    }
+
   g_free (genuine.scores);
   g_free (impostor.scores);
+  g_free (off_gen.scores);
+  g_free (off_imp.scores);
 
   return 0;
 }
