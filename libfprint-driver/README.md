@@ -437,6 +437,92 @@ finer comparison has to wait on a real impostor set. The research note ranked
 that first on the reasoning that nothing else is decidable without it; this is
 that reasoning demonstrated instead of asserted.
 
+### The real impostor set, and what it settles
+
+Five fingers of one hand, eight presses each with the placement deliberately
+varied, no blank frames: 40 captures, 280 genuine and 1280 impostor pairs, up
+from 32 and 24. Every configuration above was re-measured against it.
+
+**The pipeline is at chance.**
+
+| configuration | genuine | impostor | d' | AUC |
+|---|---|---|---|---|
+| 1x, unsharp 1.5/2.5 | 0.7 | 0.2 | 0.28 | 0.534 |
+| **2x, unsharp 1.5/2.5 (shipped)** | **7.6** | **6.4** | **0.26** | **0.563** |
+| 3x, unsharp 1.5/2.5 | 7.0 | 6.7 | 0.11 | 0.525 |
+| 4x, unsharp 1.5/2.5 | 4.2 | 3.4 | 0.23 | 0.558 |
+| 2x, no sharpening | 0.1 | 0.0 | 0.17 | 0.511 |
+| 2x, unsharp 1.5/3.0 | 7.6 | 6.5 | 0.25 | 0.583 |
+| 2x, unsharp 1.0/2.5 | 7.1 | 6.7 | 0.10 | 0.525 |
+
+Nothing tried — enlargement 1x to 4x, unsharp amount 0 to 4.0, sigma 0.5 to 2.5,
+the bozorth floor from 10 down to 2 — moves AUC outside 0.511 to 0.583. **0.5 is
+a coin flip.** At the shipped threshold of 24 the pipeline accepts 1% of genuine
+attempts and 0% of impostors; at the threshold with the best available trade it
+accepts 81% of genuine and 69% of impostors.
+
+AUC was added for this dataset because d' stops being trustworthy here. Most
+scores are exactly zero on a weak configuration, which shrinks the standard
+deviations and inflates d' — 1x scores d' 0.28 while accepting 11% of genuine
+attempts, which is not a better configuration, only a more degenerate one. AUC
+makes no distributional assumption and splits ties honestly.
+
+**The machinery is not the problem.** An identical image scored against itself
+returns **191**, so extraction, enlargement, sharpening and bozorth3 all work.
+The finding is about the data reaching them.
+
+Eight presses of one finger, scored against each other:
+
+```
+     3  5  5  10  4  3  3
+        9   4  7  5  4  12
+            6  8 12  5   8      best 12, mean 6.1
+```
+
+Against an impostor mean of 6.4. **Two presses of the same finger share almost
+nothing bozorth3 can align**, which is the whole result: the ~100 minutiae per
+sharpened frame are not reproducible between presses.
+
+That the earlier two-finger dataset gave AUC 0.687 rather than 0.563 is the
+small-sample effect this was run to remove, and it also corrects the section
+above: the claim that sharpening "earns its place on separation" was measured at
+d' 0.08 against 0.58 on 56 pairs. On 1560 pairs it is AUC 0.511 against 0.563 —
+the same direction, a tenth of the size, and both ends are chance. Sharpening
+moves the scores; it does not move the discrimination.
+
+### Two confounds in that dataset, stated because they are real
+
+The new captures carry far fewer *real* minutiae than the earlier ones. Measured
+unsharpened, where nothing is manufactured:
+
+```
+earlier batch:   7, 29, 33, 8, 57, 15
+new batch:       5,  7,  7, 2, 10,  6
+```
+
+After sharpening the new frames reach 39-127 minutiae, so **almost all of what
+the matcher sees on them is manufactured**, which is a sufficient explanation for
+why it does not correspond between two presses. Tile contrast does not predict
+this — `index1` has higher contrast than `shot1` and fewer real minutiae — so the
+gate cannot currently tell a weak frame from a strong one.
+
+And the placement variation was deliberate, on instruction from this analysis,
+after varied placements were found to drive the earlier impostor scores. On an
+8x8mm window a rotated press may share very little skin with the previous one,
+so the protocol may be harder than what a user unlocking a laptop produces. The
+earlier batch's varied placements scored a mean of 18.2 against the new batch's
+6.3.
+
+Neither confound rescues the conclusion — both sit inside a measurement that is
+at chance, and the earlier, more favourable batch was itself only AUC 0.687 — but
+they do bound what has been shown. What is established: **at 8x8mm, through NBIS,
+with realistic placement variation, this pipeline cannot distinguish two presses
+of one finger from two different fingers.** What is not established is how much
+of that is the sensor, how much is frame quality, and how much is a placement
+protocol harsher than real use. Separating those needs a capture protocol that
+holds placement to what a user actually does, and a frame-quality measure better
+than tile contrast.
+
 ### `fprintd-identify` appears to hang
 
 It is not hanging on the driver. `fprintd-identify` keeps capturing until it
