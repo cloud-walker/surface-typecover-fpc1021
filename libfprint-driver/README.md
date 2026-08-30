@@ -570,6 +570,90 @@ that predicts whether two captures will match.
 
 That leaves the capture protocol as the only untested item on the list.
 
+### The capture protocol, and the pipeline it exposes as harmful
+
+Ten presses of one index finger and eight of a middle finger, placed as if
+unlocking a laptop rather than deliberately varied — the last untested item.
+The frames are transformed:
+
+| batch | tile contrast | median reliability | minutiae |
+|---|---|---|---|
+| rotated, deliberate variation | 46-126 | 0.15-0.47 | 33-127 |
+| **natural placement** | **98-139** | **0.77-0.90** | **87-180** |
+
+No duplicate frames — the mean per-pixel difference between any two of them is
+25-51, in line with the earlier batch, so these are genuinely distinct presses.
+
+**And the discrimination did not move at all.** Through the shipped pipeline the
+natural batch scores a mean of 45.0 against the rotated batch's 7.6 — six times
+higher — for an AUC of 0.564 against 0.563. Every score rose together, genuine
+and impostor alike. This is the lesson this project keeps relearning, in its
+most extreme form yet: **scores multiplied by six, discrimination unchanged to
+the third decimal.**
+
+#### What that means for the shipped threshold
+
+Something worse falls out of it. On these good frames, at the shipped
+`bz3_threshold` of 24, the driver accepts **97% of genuine attempts and 92% of
+impostors**. The highest score in the whole matrix, 92, is an impostor pair —
+`nat_mid2` against `nat_index2`.
+
+The README has been saying that a threshold of 24 rejects everything and that
+this is the safe, honest state. That was only ever true of *poor* captures. **The
+safety came from bad frames, not from the threshold**, and a user who presses
+their finger well would let a stranger in nine times in ten.
+
+#### The pipeline is destroying the signal
+
+With the frames finally good enough to ask, the question of what the processing
+is worth has an answer. Lowering bozorth3's floor is what makes it askable at
+all: at 1x a raw frame carries 5-10 minutiae, so at the default floor of 10 it is
+short-circuited to zero by definition, and every earlier enlargement comparison
+was really comparing 2x against *a forced zero*.
+
+| configuration | genuine | impostor | AUC | TAR at FAR 0% |
+|---|---|---|---|---|
+| **2x + unsharp 2.5, floor 10 (shipped)** | **45.0** | **41.2** | **0.564** | **0%** |
+| 1x + unsharp 1.0, floor 4 | 3.8 | 0.2 | **0.812** | **45%** |
+| 1x, no sharpening, floor 4 | 3.5 | 0.2 | 0.794 | 45% |
+| 1x + unsharp 1.0, floor 10 | 0.9 | 0.0 | 0.589 | — |
+
+The raw 160x160 frame discriminates far better than anything the pipeline does to
+it. At a threshold of 4 the 1x configuration accepts 45% of genuine attempts and
+**none of 160 impostor pairs**.
+
+It replicates on both other datasets, and never loses:
+
+| dataset | shipped, TAR at FAR 0% | 1x/1.0/floor 4 | AUC shipped -> 1x |
+|---|---|---|---|
+| natural placement (146+160 pairs) | 0% | **45%** | 0.564 -> 0.812 |
+| original two-finger (30+24) | — | **56%** | 0.687 -> 0.763 |
+| rotated, five fingers (280+1280) | 1% | 8% | 0.563 -> 0.563 |
+
+The gain is largest where the frames are good and vanishes where they are not,
+which is the expected shape: enlargement and heavy sharpening manufacture
+structure, that structure is common to any frame from this sensor, and it buries
+whatever the finger actually contributed. On poor frames there is nothing to
+bury.
+
+#### What this does and does not establish
+
+TAR 45% at zero false accepts is not a usable authenticator — nearly half of
+unlock attempts fail, and 0 false accepts out of 160 pairs bounds FAR only at
+roughly 2% with any confidence. It is one subject and two fingers. But it is
+categorically unlike everything measured before: the first configuration that
+separates at all, and it arrives by *removing* processing rather than adding it.
+
+It also makes `bozorth-floor.patch` load-bearing. Measured on its own it did
+nothing, because with sharpening on every frame clears 10 anyway. It is the
+change that lets the better configuration exist, and that is the case to make
+upstream.
+
+The driver still ships 2x with unsharp 2.5 and a threshold of 24, because
+without the floor patch the 1x configuration is short-circuited by libfprint and
+scores nothing. Changing that is a decision, not a measurement, and it is
+recorded here rather than taken quietly.
+
 ### `fprintd-identify` appears to hang
 
 It is not hanging on the driver. `fprintd-identify` keeps capturing until it
