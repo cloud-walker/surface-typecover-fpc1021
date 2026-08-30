@@ -232,6 +232,18 @@ Then `-m N` sets it. **Without the patch the bench still builds** and everything
 except `-m` behaves identically — `-m` reports what is missing and exits — so a
 stock libfprint checkout remains usable.
 
+### Minutia reliability: `-q`
+
+`mindtct` scores every minutia for how much it trusts it, and libfprint computes
+that score and then drops it — only x, y and theta reach the `xyt_struct` that
+bozorth3 matches on (`fpi-print.c:138-152`). `-q N` drops minutiae under N%
+reliability before the template is built, and the per-capture listing gains two
+columns: how many minutiae the frame produced, how many survived the filter, and
+the frame's median reliability.
+
+Measured, it does not help — see `../libfprint-driver/README.md`. It is kept
+because the answer was not obvious and the next person will want to ask.
+
 ### `-s 0` used to hand NBIS a frame of NaN
 
 Worth knowing, because it produced a plausible-looking wrong answer rather than
