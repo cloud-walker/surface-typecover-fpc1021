@@ -735,6 +735,141 @@ But it is measured properly, it is more than twice the shipped configuration,
 and it arrives by deleting code rather than adding it. It is enough to make the
 upstream case for the floor patch on evidence rather than principle.
 
+### Matching the pixels instead of the minutiae
+
+Every configuration above tunes a minutiae pipeline. The survey in
+[`../docs/research/other-projects-small-area.md`](../docs/research/other-projects-small-area.md)
+found that no open-source project which got a sub-100 mm² press sensor working
+on Linux does that: they all stopped handing images to NBIS and matched the
+image directly. `fpc_bench -N` is that matcher, measured here against the one
+this driver ships, on the same captures through the same harness.
+
+It scores a pair by normalised cross-correlation on the **raw** frame — a
+local-mean high-pass, correlation over the overlap with a half-frame minimum
+overlap guard, and a coarse-to-fine translation search. Raw because §"The
+capture protocol, and the pipeline it exposes as harmful" already established
+that enlargement and sharpening manufacture structure common to any frame from
+this sensor. Scores are reported as milli-NCC integers so the `-S` labelling,
+AUC and threshold machinery is shared with the bozorth3 path and the two
+matchers stay comparable pair for pair.
+
+Before any of it was read, the machinery was checked the way this README has
+learned to check things: a frame against itself returns exactly 1000, NCC 1.0.
+
+Over the 42 natural-placement captures, 314 genuine and 1408 impostor pairs —
+the set used in §"Confirming 1x on a real impostor set":
+
+| matcher | AUC | TAR at 0 false accepts in 1408 |
+|---|---|---|
+| NBIS, 1x, no sharpening, floor 4 | 0.802 | 8% |
+| **NCC, radius 20** | **0.839** | **64%** |
+
+AUC moves modestly. The operating point moves eightfold. At a threshold that
+admits none of the 1408 impostor pairs, the minutiae pipeline admits 8% of
+genuine attempts and this admits 64%. The reason is the impostor distribution
+rather than the genuine one — impostor sd 32.7 against genuine 232.7 — so a
+clean threshold exists where bozorth3 offered none. That was always the actual
+problem: not that genuine scores were low, but that nothing separated them from
+impostor scores.
+
+#### The predicted mechanism is not the one that operates
+
+MR !646 measured EER 8.83% at search radius 3 against 0.07% at 16 and concluded
+the alignment search radius was the dominant parameter, on the reasoning that
+finger placement moves about 16 px between presses. Swept here:
+
+| radius | 2 | 4 | 8 | 12 | 16 | 20 |
+|---|---|---|---|---|---|---|
+| AUC | 0.820 | 0.814 | 0.812 | 0.814 | 0.833 | 0.839 |
+
+Flat. No cliff. The offsets say why, and the search returns them for free:
+
+| | pairs | mean | median | p90 | max |
+|---|---|---|---|---|---|
+| genuine | 314 | 7.4 | **1.0** | 20.0 | 24.1 |
+| impostor | 1408 | 14.8 | 16.1 | 20.0 | 27.0 |
+
+**Genuine pairs peak at a median offset of 1.0 px, not 16.** This subject places
+a finger far more repeatably than the FT9201 author's collection protocol did,
+so a wide search has almost nothing to find. The 16 px figure is a property of
+that collection, not of small sensors, and it should not be carried forward as
+if it were a sensor constant. Impostor pairs peak at a median of 16.1 with p90
+sitting on the search boundary, which is what the absence of a true alignment
+looks like: the peak lands wherever the box ends.
+
+So the improvement belongs to the matcher class, not to the alignment search.
+
+#### Rotation buys little, and not distinguishably
+
+Neither published NCC implementation searches rotation. `-A MAX[:STEP]` adds
+that axis, at radius 8:
+
+| | AUC | genuine mean | impostor mean | TAR at FAR 0 |
+|---|---|---|---|---|
+| translation only | 0.812 | 310.5 | 85.9 | 57% |
+| ±4°, step 2 | 0.820 | 344.8 | 95.1 | 58% |
+| ±8°, step 4 | 0.833 | 349.4 | 96.2 | 59% |
+
+Angle 0 is included and Catmull-Rom at zero offset is bit-exact, so the maximum
+over angles can only rise; the question is whether it rises differentially. It
+does not much: genuine means rise 11.2% and impostor means 12.0%, so the
+inflation is close to even and the ranking improves only slightly. The gain is
+about the same size as widening the translation radius by a comparable amount
+(radius 20 alone reaches 0.839), and nothing here separates "rotation matters"
+from "a larger search raises every maximum". Recorded as a small ambiguous
+gain, not a mechanism.
+
+#### A retraction, from the ghost-frame work
+
+§"The capture protocol, and the pipeline it exposes as harmful" reports that
+averaging a frame with the ghost captured milliseconds later within one
+unbroken press makes matching worse, and attributes it to misalignment within
+the press, inferred from a mean difference of 42 grey levels between the two.
+**That inference was wrong and is withdrawn.** The control that settles it:
+
+| | pixel difference |
+|---|---|
+| left index, within-press (2 verified pairs) | 49.7, 54.5 |
+| left index, between-press (15 pairs) | min 44.8, median 57.6, max 69.7 |
+| right index, between-press (45 pairs) | min 28.0, median 36.4, max 42.7 |
+
+Within-press differences sit at or below the between-press median for the same
+finger in the same session, so a ~50 grey-level difference is simply what two
+acquisitions of this finger look like. Combined with the offset measurement
+above — between-press displacement is about 1 px — the same magnitude appears
+where displacement is known to be tiny. The grey-level difference never implied
+displacement; the inference took a magnitude for a geometry.
+
+The arithmetic agrees. Ridge period here is 10 px, so a 1 px offset is a tenth
+of a period and averaging two patterns that far apart costs about
+cos(18°) ≈ 5% of amplitude. The measured cost of averaging two healthy verified
+pairs is roughly 25% of tile contrast (189.4 and 195.0 → 142.4; 201.1 and
+213.0 → 164.8), five times what 1 px can account for.
+
+What differs between two acquisitions is therefore dominated by a decorrelated,
+noise-like component rather than by geometry. That explains the averaging
+failure as contrast dilution rather than blur, and it is the same statement as
+the flat radius sweep: if displacement is not the problem, widening the search
+cannot be the fix.
+
+It is also why the deliberately-varied batch cannot be rescued. NCC is at chance
+there — AUC 0.543 at radius 2 and 0.538 at 20, against NBIS's 0.563 — and that
+set differs from the natural one in frame quality (contrast 46-126 against
+98-139), not in placement. No matcher recovers signal the capture did not
+contain.
+
+#### What this does not establish
+
+Still one subject and five fingers of one hand, collected in one sitting.
+"Zero false accepts" means 0 of 1408, which the rule of three bounds at roughly
+FAR 0.2% with 95% confidence — not zero. And 64% TAR is not an authenticator:
+one unlock attempt in three would still fail, against the ~5.4 d' equivalent
+that Android's Class 3 bar implies.
+
+It is a large improvement in the number that matters, measured properly, and it
+is not yet a shippable one. The driver is unchanged; this lives in the bench
+until a second subject says the same thing.
+
 ### `fprintd-identify` appears to hang
 
 It is not hanging on the driver. `fprintd-identify` keeps capturing until it
