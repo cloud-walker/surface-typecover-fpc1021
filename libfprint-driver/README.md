@@ -679,6 +679,62 @@ Lowering it is not a tuning decision. What would justify a real threshold is a
 separation measurement — `fpc_bench` reports TAR at a capped FAR — and every one
 taken so far says there is nothing to separate.
 
+### Confirming 1x on a real impostor set
+
+The 1x result above rested on one subject and two fingers — 146 genuine and 160
+impostor pairs — which is the shape of error this project has already made once.
+Three more fingers under the same natural protocol bring it to **42 captures,
+314 genuine and 1408 impostor pairs**.
+
+**It replicates.**
+
+| configuration | genuine | impostor | AUC | TAR at FAR 0% | TAR at FAR 1% |
+|---|---|---|---|---|---|
+| 2x + unsharp 2.5, floor 10 (shipped) | 49.6 | 38.1 | 0.667 | 3% | 8% |
+| **1x, no sharpening, floor 4** | **10.8** | **2.2** | **0.802** | 8% | **18%** |
+| 1x + unsharp 0.5, floor 4 | 11.8 | 2.6 | 0.799 | 5% | 19% |
+| 1x + unsharp 1.0, floor 4 | 12.4 | 2.9 | 0.792 | 11% | 17% |
+| 1x + unsharp 1.0, floor 10 | 9.9 | 2.5 | 0.645 | 11% | 17% |
+
+Removing the pipeline roughly doubles the usable accept rate: 18% of genuine
+attempts at a 1% false-accept rate, against 8% for the shipped configuration.
+
+Two details sharpen the earlier account. **Sharpening does not help at 1x** — the
+raw frame is the best of the group at AUC 0.802 — so the right pipeline for this
+sensor is not a gentler pipeline but *no* pipeline. And **the floor is the
+enabling change**: holding everything else fixed, floor 10 against floor 4 is AUC
+0.645 against 0.792. `bozorth-floor.patch` is what lets the better configuration
+exist, now with 1408 impostor pairs behind that claim instead of 160.
+
+#### What the small sample had got wrong
+
+The two-finger measurement reported TAR 45% at a false-accept rate of zero. On
+the full set that is **8-11%**. Nothing was miscomputed: "zero false accepts"
+meant 0 of 160 pairs, and with 1408 pairs the threshold that holds FAR at zero
+rises from 4 to 36, taking most of the genuine accepts with it. The AUC, which
+does not depend on picking a threshold, barely moved — 0.81 to 0.79.
+
+That is worth keeping as a rule for this bench: **AUC is what replicates; TAR at
+a capped FAR is what a small impostor set flatters.** The decision to confirm
+before proposing anything upstream was the right one.
+
+#### And the security finding holds at scale
+
+At the old `bz3_threshold` of 24, the shipped pipeline on these frames accepts
+**92% of genuine attempts and 86% of impostors** — measured now on 1408 impostor
+pairs rather than 160. The refusal in the driver is not an over-reaction to a
+small sample.
+
+#### Where this leaves it
+
+TAR 18% at FAR 1% is not an authenticator: four unlock attempts in five would
+fail, and a 1% false-accept rate is far outside anything shippable. Still one
+subject and five fingers of one hand.
+
+But it is measured properly, it is more than twice the shipped configuration,
+and it arrives by deleting code rather than adding it. It is enough to make the
+upstream case for the floor patch on evidence rather than principle.
+
 ### `fprintd-identify` appears to hang
 
 It is not hanging on the driver. `fprintd-identify` keeps capturing until it
