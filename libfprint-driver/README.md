@@ -826,7 +826,7 @@ small sample.
 
 TAR 18% at FAR 1% is not an authenticator: four unlock attempts in five would
 fail, and a 1% false-accept rate is far outside anything shippable. Still one
-subject and five fingers of one hand.
+subject and five fingers of the right hand.
 
 But it is measured properly, it is more than twice the shipped configuration,
 and it arrives by deleting code rather than adding it. It is enough to make the

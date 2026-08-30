@@ -302,6 +302,23 @@ writes. `journalctl -u fprintd | grep ghost` confirms each write.
 Unset, the variable costs one comparison per drained packet and changes nothing;
 the frame is discarded exactly as before, it is just written down first.
 
+**Blank frames in that directory are not sensor faults.** The requested frame is
+written *before* the blank-frame gate, so a capture the driver rejected still
+lands on disk — as an all-white raster, byte-identical between occurrences.
+Reading the directory cold, one collection looked like four sensor failures and
+was four ordinary rejections.
+
+**`Finger present 1` / `0` in the journal is not a presence measurement.** The
+FPC1021 has no finger-presence interrupt. Those lines are the driver's own
+`fpi_image_device_report_finger_status()` calls — `TRUE` when a capture header
+arrives, `FALSE` when the frame is delivered or rejected — so both transitions
+land inside the same second regardless of how long the finger was actually
+there. They cannot be used to measure hold duration, which matters because hold
+duration is what decides whether the ghost frame is a print or a blank: across
+three enrolments the ghost yield ran 2 of 6, 6 of 8 and 10 of 11, and the only
+thing that varied was how promptly the finger came off. Fix it as a protocol —
+the same deliberate count on every press — rather than trying to measure it.
+
 Two questions it can answer. Whether the ghost is a real second view of the
 finger at all — which would finally explain it — and, if it is, whether
 averaging it with the requested frame helps. Two frames of one press cover the
