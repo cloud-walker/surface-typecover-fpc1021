@@ -148,6 +148,7 @@ struct _FpiDeviceFpc1021
   gsize    ghost_len;
   gsize    ghost_have;
   guint    ghost_seq;
+  guint    frame_seq;
 };
 
 G_DECLARE_FINAL_TYPE (FpiDeviceFpc1021, fpi_device_fpc1021, FPI,
@@ -521,6 +522,25 @@ fpc_frame_contrast (const guint8 *buf, gint width, gint height)
   return tiles ? total / tiles : 0.0;
 }
 
+/* Writes one raw frame into FPC1021_GHOST_DIR, for the diagnostic below. */
+static void
+fpc_dump_frame (FpiDeviceFpc1021 *self, const gchar *kind, guint seq,
+                const guint8 *buf, gsize len)
+{
+  const gchar *dir = g_getenv ("FPC1021_GHOST_DIR");
+  g_autofree gchar *path = NULL;
+  g_autoptr(GError) error = NULL;
+
+  if (!dir || !buf || !len)
+    return;
+
+  path = g_strdup_printf ("%s/%s-%u-%u.bin", dir, kind, (guint) getpid (), seq);
+  if (g_file_set_contents (path, (const gchar *) buf, (gssize) len, &error))
+    fp_warn ("fpc1021: wrote %s frame %s (%zu bytes)", kind, path, len);
+  else
+    fp_warn ("fpc1021: could not write %s frame: %s", kind, error->message);
+}
+
 static void
 deliver_image (FpDevice *dev)
 {
@@ -528,6 +548,12 @@ deliver_image (FpDevice *dev)
   FpImageDevice *idev = FP_IMAGE_DEVICE (dev);
   FpImage *enlarged;
   gdouble contrast;
+
+  /* Paired with the ghost frame for the averaging experiment: written before
+   * the gate, so a rejected frame still leaves its half of the pair. The
+   * sequence numbers line up, frame-N against ghost-N. */
+  fpc_dump_frame (self, "frame", self->frame_seq++, self->image_buf,
+                  (gsize) self->width * self->height);
 
   contrast = fpc_frame_contrast (self->image_buf, self->width, self->height);
   if (contrast < FPC_MIN_TILE_CONTRAST)
@@ -795,17 +821,7 @@ fpc_ghost_feed (FpiDeviceFpc1021 *self, const guint8 *buf, gint len)
   if (self->ghost_have < self->ghost_len)
     return;
 
-  {
-    g_autofree gchar *path = g_strdup_printf ("%s/ghost-%u-%u.bin", dir,
-                                              (guint) getpid (), self->ghost_seq++);
-    g_autoptr(GError) error = NULL;
-
-    if (g_file_set_contents (path, (const gchar *) self->ghost_buf,
-                             (gssize) self->ghost_len, &error))
-      fp_warn ("fpc1021: wrote ghost frame %s (%zu bytes)", path, self->ghost_len);
-    else
-      fp_warn ("fpc1021: could not write ghost frame: %s", error->message);
-  }
+  fpc_dump_frame (self, "ghost", self->ghost_seq++, self->ghost_buf, self->ghost_len);
 
   g_clear_pointer (&self->ghost_buf, g_free);
   self->ghost_have = 0;

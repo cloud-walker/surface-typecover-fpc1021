@@ -56,13 +56,28 @@ a reply that did not acknowledge the command it had sent. Replies carry
 path now rejects a mismatch with "desynchronised reply" instead of decoding
 whatever bytes arrived.
 
-**Still open: where the extra image comes from.** It did not reproduce over
-plain libusb in 21 captures, including four paced to match libfprint's own
-~7.5ms/packet drain, and a bare read after a capture with the finger held
-down always timed out. Whatever triggers it, the driver no longer needs to
-know: draining makes an unread image harmless instead of fatal. The
-never-ported opcode `0x0005` remains the natural suspect for a "stop
-capture" command that would prevent the frame rather than discard it.
+**Answered (2026-08-30): the extra image is a second acquisition.** It was
+collected by reassembling the drained packets instead of only counting them
+(`FPC1021_GHOST_DIR`, see `tools/README.md`) and it is a real frame of the
+finger — one collected ghost carried 171 minutiae and scored 53-81 against
+separate captures of the same finger, which is what those captures score
+against each other.
+
+The sensor takes a second image immediately after the requested one. Whether
+it is any good depends on the finger: lift promptly and the ghost is blank
+(tile contrast 17-18, gated), hold still and it is an ordinary frame. In one
+enrolment where the finger was lifted at each stage, two of three ghosts were
+blank; in one where it was held, six of six carried a print.
+
+It is **not** a re-read of the same image. A frame and the ghost that follows
+it differ by a mean of 42 grey levels per pixel, which is the same order as two
+*separate presses* of one finger (25-51). The sensor is acquiring again, not
+retransmitting.
+
+This does not change the drain, which still discards it — an unread reply
+desynchronises the protocol whatever the reply contains. It does retire
+`0x0005` as a suspect for a "stop capture" command, since nothing is being
+stopped: the second acquisition is what this sensor does.
 
 Two earlier observations, kept because they cost time to establish:
 `CLEAR_FEATURE(ENDPOINT_HALT)` on both endpoints does not restore touch
@@ -572,6 +587,56 @@ measurement. It is a real quality signal about a capture. It is just not one
 that predicts whether two captures will match.
 
 That leaves the capture protocol as the only untested item on the list.
+
+### What the ghost frame is worth: not averaging, possibly selection
+
+Two frames of one press cover the same skin, so the hope was noise averaging —
+aimed at the manufactured minutiae that are this driver's actual failure rather
+than at the area problem the literature describes.
+
+**Averaging makes it worse.** Scored against four separate captures of the same
+finger:
+
+| image | mean score against the reference |
+|---|---|
+| frame-4 | **47.3** |
+| ghost-2 | 8.8 |
+| mean of the two | 11.3 |
+| frame-6 | **55.0** |
+| ghost-4 | 20.5 |
+| mean of the two | 29.3 |
+
+The average lands near the weaker half, not between them. That follows from the
+42-grey-level difference above: the two acquisitions are not aligned, so
+averaging superimposes offset ridge patterns and blurs rather than denoises.
+
+**Selection is the interesting reading.** Frame quality varies enormously within
+a single enrolment — the twelve frames collected score between 7.8 and 55.0
+against the same reference — and the ghost is sometimes the better of the pair.
+`frame-2` scored 17.5 while the ghost beside it scored 44.2.
+
+What makes that actionable is that something cheap predicts it:
+
+```
+correlation(minutiae, mean score against reference) = 0.92   over 12 frames
+```
+
+This does not contradict "counting minutiae is the wrong measurement" from the
+enlargement work above. That was about comparing *configurations*, where
+changing the pipeline changes what a minutia is; this is about comparing
+*frames* at a fixed configuration, where it evidently does predict matchability.
+
+So the sensor already hands us a free second frame, and minutia count says which
+one to keep. That is a concrete change: reassemble the drained frame rather than
+dropping it, extract from both, deliver whichever yields more minutiae.
+
+**Not yet measured: whether it improves separation.** Everything above is
+genuine scores, which is the objective this project has repeatedly been wrong to
+optimise. Frame selection could plausibly raise impostor scores just as much.
+Testing it needs a collection of many frame/ghost pairs across several fingers,
+then AUC on selected against unselected — the same standard every other change
+here has been held to. Until then this is a lead, not a result. The correlation
+rests on twelve frames of one finger in one session.
 
 ### The capture protocol, and the pipeline it exposes as harmful
 
