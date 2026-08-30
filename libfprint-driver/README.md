@@ -56,13 +56,29 @@ a reply that did not acknowledge the command it had sent. Replies carry
 path now rejects a mismatch with "desynchronised reply" instead of decoding
 whatever bytes arrived.
 
-**Still open: where the extra image comes from.** It did not reproduce over
-plain libusb in 21 captures, including four paced to match libfprint's own
-~7.5ms/packet drain, and a bare read after a capture with the finger held
-down always timed out. Whatever triggers it, the driver no longer needs to
-know: draining makes an unread image harmless instead of fatal. The
-never-ported opcode `0x0005` remains the natural suspect for a "stop
-capture" command that would prevent the frame rather than discard it.
+**Answered (2026-08-30): the extra image is a second acquisition.** It was
+collected by reassembling the drained packets instead of only counting them
+(`FPC1021_GHOST_DIR`, see `tools/README.md`) and it is a real frame of the
+finger — one collected ghost carried 171 minutiae and scored 53-81 against
+separate captures of the same finger, which is what those captures score
+against each other.
+
+The sensor takes a second image immediately after the requested one. Whether
+it is any good depends on the finger: lift promptly and the ghost is blank
+(tile contrast 17-18, gated), hold still and it is an ordinary frame. In one
+enrolment where the finger was lifted at each stage, two of three ghosts were
+blank; in one where it was held, six of six carried a print.
+
+It is **not** a re-read of the same image. A frame and the ghost that follows
+it differ by a mean of 42 grey levels per pixel, which is the same order as two
+*separate presses* of one finger (25-51). The sensor is acquiring again, not
+retransmitting. (That difference was first read here as displacement; it is not
+— see the retraction below.)
+
+This does not change the drain, which still discards it — an unread reply
+desynchronises the protocol whatever the reply contains. It does retire
+`0x0005` as a suspect for a "stop capture" command, since nothing is being
+stopped: the second acquisition is what this sensor does.
 
 Two earlier observations, kept because they cost time to establish:
 `CLEAR_FEATURE(ENDPOINT_HALT)` on both endpoints does not restore touch
@@ -573,6 +589,117 @@ that predicts whether two captures will match.
 
 That leaves the capture protocol as the only untested item on the list.
 
+### What the ghost frame is worth: not averaging, possibly selection
+
+Two frames of one press cover the same skin, so the hope was noise averaging —
+aimed at the manufactured minutiae that are this driver's actual failure rather
+than at the area problem the literature describes.
+
+**Averaging makes it worse.** Scored against four separate captures of the same
+finger:
+
+| image | mean score against the reference |
+|---|---|
+| frame-4 | **47.3** |
+| ghost-2 | 8.8 |
+| mean of the two | 11.3 |
+| frame-6 | **55.0** |
+| ghost-4 | 20.5 |
+| mean of the two | 29.3 |
+
+The average lands near the weaker half, not between them.
+
+**The explanation first given here was wrong, and is retracted.** It read that
+difference as misalignment — two unaligned acquisitions superimposing offset
+ridge patterns — which took a magnitude for a geometry and was never controlled.
+The control, run later: within-press differences are *smaller* than between-press
+differences for the same finger in the same session.
+
+| | mean grey-level difference per pixel |
+|---|---|
+| lindex, within one press (write-order-verified pairs) | 49.7, 54.5 |
+| lindex, between presses (6 frames, 15 pairs) | median 57.6 (44.8–69.7) |
+| nat_index, between presses (10 captures, 45 pairs) | median 36.4 (28.0–42.7) |
+
+So a ~50 grey-level difference is simply what two acquisitions of this finger
+look like. An NCC search over the same captures then measured the between-press
+displacement directly at a **median of 1.0 px**, so that magnitude appears where
+displacement is known to be tiny and cannot have implied displacement here
+either.
+
+The arithmetic closes it. Ridge period measures 10px, so 1px is 36° and
+averaging two ridge patterns that far apart costs about cos(18°) — 5% of
+amplitude. Measured on two healthy verified pairs, averaging costs tile contrast
+189.4 and 195.0 → 142.4, and 201.1 and 213.0 → 164.8: roughly **25%**, five
+times what displacement can account for.
+
+What actually differs between two acquisitions is therefore dominated by a
+decorrelated, noise-like component rather than by geometry, and averaging fails
+by diluting ridge contrast, not by blurring misaligned ridges. That is the same
+statement as the flat NCC radius sweep — if the difference is not geometric,
+searching further cannot fix it — and it is why the deliberately-varied batch
+cannot be rescued by a wider search either.
+
+**Selection is the interesting reading.** Frame quality varies enormously within
+a single enrolment — the twelve frames collected score between 7.8 and 55.0
+against the same reference — and the ghost is sometimes the better of the pair.
+`frame-2` scored 17.5 while the ghost beside it scored 44.2.
+
+What makes that actionable is that something cheap predicts it:
+
+```
+correlation(minutiae, mean score against reference) = 0.92   over 12 frames
+```
+
+This does not contradict "counting minutiae is the wrong measurement" from the
+enlargement work above. That was about comparing *configurations*, where
+changing the pipeline changes what a minutia is; this is about comparing
+*frames* at a fixed configuration, where it evidently does predict matchability.
+
+So the sensor already hands us a free second frame, and minutia count says which
+one to keep. That is a concrete change: reassemble the drained frame rather than
+dropping it, extract from both, deliver whichever yields more minutiae.
+
+**Measured against impostors, it does not survive.** Three more enrolments —
+right middle, right thumb, left index — give 35 frames across three fingers.
+Restricting the set to frames with more minutiae, which is what selection
+amounts to:
+
+| kept | genuine pairs | impostor pairs | AUC |
+|---|---|---|---|
+| every gated frame | 250 | 400 | 0.465 |
+| minutiae >= 40 | 172 | 290 | 0.450 |
+| minutiae >= 90 | 74 | 136 | 0.583 |
+| minutiae >= 120 | 62 | 48 | 0.443 |
+
+Not monotonic, all near chance, and the one apparent gain at 90 is contradicted
+by 120. **The 0.92 correlation was with genuine scores alone**, and raising
+genuine scores without separating is this project's recurring error — recorded
+here for the fourth time, and this time predicted in the paragraph that
+originally reported the correlation.
+
+So the ghost frame is explained and is worth nothing for matching. Averaging the
+pair is harmful, selecting between them is chance. What it settles is the
+protocol question, which was open since the wedge fix.
+
+Note also what these three fingers score on their own: AUC 0.465 over 650 pairs,
+at or below chance, on a set including a thumb that produced blank frames at
+half its enrolment stages. That is consistent with everything else measured
+here.
+
+#### A collection bug, and what it cost
+
+The frames were first named `<kind>-<pid>-<counter>.bin`. The counters live on
+the device instance and fprintd recreates that between enrolment sessions, so
+the third enrolment restarted at zero under the same pid and silently
+overwrote the first one's early frames. Six frames and two ghosts were lost;
+the rest were recovered by partitioning on the `enroll-completed` markers in
+the journal, which is why the right-middle group is smaller than the others.
+
+Dumps are now named by capture time in microseconds, which cannot collide at
+~1.7s per capture and sorts into capture order across sessions — which a pid
+and a counter did not.
+
 ### The capture protocol, and the pipeline it exposes as harmful
 
 Ten presses of one index finger and eight of a middle finger, placed as if
@@ -729,7 +856,7 @@ small sample.
 
 TAR 18% at FAR 1% is not an authenticator: four unlock attempts in five would
 fail, and a 1% false-accept rate is far outside anything shippable. Still one
-subject and five fingers of one hand.
+subject and five fingers of the right hand.
 
 But it is measured properly, it is more than twice the shipped configuration,
 and it arrives by deleting code rather than adding it. It is enough to make the

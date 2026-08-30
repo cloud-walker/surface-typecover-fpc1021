@@ -7,6 +7,11 @@
 # behaviour on its own -- it defaults to the 10 libfprint hardcodes -- and is
 # carried so the 1x matching configuration can be tested on real hardware
 # rather than only on the offline bench.
+#
+# pkgrel 17 adds the FPC1021_GHOST_DIR diagnostic: with that variable set, the
+# unrequested frame the drain throws away before most captures is reassembled
+# and written out instead of only counted, alongside the requested frame it
+# pairs with. Unset, nothing changes.
 # Source is a fixed local checkout (already patched, already validated to
 # build and work against real hardware), not fetched from the network, so
 # this PKGBUILD only exists to get it installed and tracked via pacman
@@ -17,7 +22,7 @@
 
 pkgname=libfprint
 pkgver=1.94.100
-pkgrel=16
+pkgrel=19
 pkgdesc="Library for fingerprint readers (+ fpc1021 / Surface Type Cover driver)"
 arch=('x86_64')
 url="https://fprint.freedesktop.org/"
