@@ -605,6 +605,32 @@ report_separation (const dist *gen, const dist *imp, gint threshold)
         }
     }
 
+  /* What a security decision actually needs: how many genuine attempts are
+   * accepted at a threshold whose false-accept rate is capped. The "best
+   * operating point" above maximises a margin and will happily sit at a FAR
+   * no product could ship. */
+  printf ("\n  genuine accepted at a threshold capping impostors:\n");
+  {
+    const gdouble caps[] = { 0.0, 0.001, 0.01 };
+    for (gsize c = 0; c < G_N_ELEMENTS (caps); c++)
+      {
+        gint t_ok = -1;
+        for (gint t = hi + 1; t >= 1; t--)
+          {
+            if ((gdouble) dist_at_or_above (imp, t) / imp->n <= caps[c])
+              t_ok = t;
+            else
+              break;
+          }
+        if (t_ok < 0)
+          printf ("    FAR <= %-5.1f%%   unreachable at any threshold\n", caps[c] * 100.0);
+        else
+          printf ("    FAR <= %-5.1f%%   threshold %-4d TAR %.0f%%\n",
+                  caps[c] * 100.0, t_ok,
+                  100.0 * dist_at_or_above (gen, t_ok) / gen->n);
+      }
+  }
+
   printf ("\n  at the shipped threshold %d:  accepts %.0f%% of genuine, %.0f%% of impostor\n",
           threshold,
           100.0 * dist_at_or_above (gen, threshold) / gen->n,
