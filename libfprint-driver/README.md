@@ -523,6 +523,53 @@ protocol harsher than real use. Separating those needs a capture protocol that
 holds placement to what a user actually does, and a frame-quality measure better
 than tile contrast.
 
+### The better quality measure exists, is discarded by libfprint, and does not help
+
+NBIS already computes the measure the section above asked for. `mindtct` scores
+every minutia it finds for how much it trusts it, and libfprint's
+`minutiae_to_xyt()` carries that into `c[i].col[3]` — and then copies only
+`col[0..2]` into the `xyt_struct` bozorth3 matches on
+(`fpi-print.c:138-152`). NBIS ships `bz_prune()` and `sort_quality_decreasing()`
+for precisely this use and neither is reachable from libfprint.
+
+That is worth reporting upstream on its own. It also has a side effect nothing
+here hits but another driver might: when a frame yields more than
+`MAX_BOZORTH_MINUTIAE` (200), libfprint keeps the first 200 of a list `mindtct`
+sorted by *position* (`minutia.c:533`, `sort_minutiae_y_x`), so the discarded
+minutiae are the ones lowest on the image rather than the ones least trusted.
+Our frames top out at 155.
+
+The hypothesis it enables is direct: if the minutiae sharpening manufactures are
+the untrustworthy ones, dropping them should raise separation. `fpc_bench -q N`
+drops minutiae under N% reliability before the template is built.
+
+| minimum reliability | minutiae kept (mean) | genuine | impostor | AUC |
+|---|---|---|---|---|
+| **0% (what libfprint does)** | **77** | **7.6** | **6.4** | **0.563** |
+| 10% | 70 | 7.2 | 6.0 | 0.557 |
+| 20% | 40 | 6.0 | 5.8 | 0.498 |
+| 30% | 39 | 5.7 | 5.6 | 0.498 |
+| 40% | 13 | 0.7 | 0.4 | 0.530 |
+| 50% | 7 | 0.1 | 0.0 | 0.505 |
+
+**It gets worse, monotonically at first and never better.** Rejecting whole
+frames on the same signal, rather than individual minutiae, fails the same way —
+keeping only the 25 captures whose median reliability clears 0.25 gives AUC
+0.509, and the best 18 give 0.522, against 0.563 for all 40.
+
+So NBIS scores the manufactured minutiae as trustworthy as the real ones, and
+pruning on reliability removes signal and noise together. **The frame-quality
+lever is spent**: the better measure than tile contrast exists, it is NIST's
+own, and it carries nothing that helps this sensor match.
+
+Median reliability does still describe the *frames*. The earlier batch sits
+uniformly at 0.40-0.44 while the new one spreads 0.15-0.47, which is the batch
+quality difference recorded above showing up in a second, independent
+measurement. It is a real quality signal about a capture. It is just not one
+that predicts whether two captures will match.
+
+That leaves the capture protocol as the only untested item on the list.
+
 ### `fprintd-identify` appears to hang
 
 It is not hanging on the driver. `fprintd-identify` keeps capturing until it

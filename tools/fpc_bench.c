@@ -27,6 +27,8 @@
  *   -s, --sigma F       unsharp sigma (0 with -a 0 disables sharpening)
  *   -a, --amount F      unsharp amount (0 disables sharpening)
  *   -m, --min-minutiae N  bozorth3's computable floor (default NIST's 10)
+ *   -q, --reliability N   drop minutiae whose NBIS reliability is under N%
+ *                         (0 keeps all, which is what libfprint does)
  *   -S, --subject NAME  label the captures that follow; see below
  *   -w, --width N       capture width (default 160)
  *   -h, --height N      capture height (default 160)
@@ -63,6 +65,7 @@
 #include <math.h>
 
 #include "fpi-print.h"
+#include "fpi-minutiae.h"
 #include "fp-print-private.h"
 #include "fpi-image.h"
 #include "fpi-log.h"
@@ -97,6 +100,8 @@ typedef struct {
   const char *subject;   /* which finger this is, from -S; NULL if unlabelled */
   FpPrint    *print;     /* one print, holding this capture's minutiae */
   guint       minutiae;
+  guint       minutiae_raw;   /* before the reliability filter */
+  gdouble     reliability;    /* median over the frame's minutiae */
   gdouble     contrast;
   gboolean    gated;     /* rejected by the blank-frame gate */
 } sample;
@@ -324,6 +329,62 @@ read_raw (const char *path, gsize expected)
   return buf;
 }
 
+/* Per-minutia reliability: NBIS computes it, libfprint throws it away.
+ *
+ * mindtct scores every minutia it finds for how much it trusts it, and
+ * libfprint's minutiae_to_xyt() carries that into c[i].col[3] -- and then
+ * copies only col[0..2] into the xyt_struct that bozorth3 matches on
+ * (fpi-print.c:138-152). NBIS ships bz_prune() and sort_quality_decreasing()
+ * for exactly this, and neither is reachable from libfprint.
+ *
+ * That matters here because sharpening manufactures minutiae: a real frame
+ * carries 2-10 of them and the same frame sharpened carries 39-127. If the
+ * manufactured ones are the untrustworthy ones, dropping them should raise
+ * separation. If they score as reliable as the real ones, that is a harder
+ * and more interesting answer.
+ *
+ * The array belongs to the FpImage and libfprint says not to modify it. It
+ * is modified here anyway, deliberately: the image is built and dropped
+ * inside this function, and pruning before fpi_print_add_from_image() is the
+ * only way to ask the question without a second copy of minutiae_to_xyt().
+ */
+static gint reliability_floor = 0;   /* percent; 0 keeps every minutia */
+
+static gdouble
+median_reliability (GPtrArray *m)
+{
+  g_autofree gdouble *v = NULL;
+  gint n = m ? (gint) m->len : 0;
+
+  if (!n) return 0.0;
+  v = g_new (gdouble, n);
+  for (gint i = 0; i < n; i++)
+    v[i] = ((struct fp_minutia *) g_ptr_array_index (m, i))->reliability;
+
+  /* Insertion sort: n is at most a few hundred. */
+  for (gint i = 1; i < n; i++)
+    {
+      gdouble key = v[i];
+      gint j = i - 1;
+      while (j >= 0 && v[j] > key) { v[j + 1] = v[j]; j--; }
+      v[j + 1] = key;
+    }
+  return n % 2 ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2.0;
+}
+
+static void
+prune_unreliable (GPtrArray *m)
+{
+  if (!m || reliability_floor <= 0) return;
+
+  for (gint i = (gint) m->len - 1; i >= 0; i--)
+    {
+      struct fp_minutia *min = g_ptr_array_index (m, i);
+      if (min->reliability * 100.0 < reliability_floor)
+        g_ptr_array_remove_index (m, i);
+    }
+}
+
 /* The driver's delivery path: raw frame -> gate -> enlarge -> ppmm. */
 static gboolean
 load_sample (sample *s, const char *path, const char *subject, gint w, gint h,
@@ -364,6 +425,13 @@ load_sample (sample *s, const char *path, const char *subject, gint w, gint h,
    * print that the same internal helpers accept. FpPrint is a
    * GInitiallyUnowned, hence the sink. */
   detect_minutiae_sync (big);
+
+  {
+    GPtrArray *m = fp_image_get_minutiae (big);
+    s->minutiae_raw = m ? m->len : 0;
+    s->reliability = median_reliability (m);
+    prune_unreliable (m);
+  }
 
   s->print = g_object_ref_sink (g_object_new (FP_TYPE_PRINT,
                                               "driver", "fpc1021",
@@ -584,6 +652,8 @@ main (int argc, char **argv)
        * several fingers. */
       else if ((!strcmp (argv[i], "-S") || !strcmp (argv[i], "--subject")) && i + 1 < argc)
         subject = argv[++i];
+      else if ((!strcmp (argv[i], "-q") || !strcmp (argv[i], "--reliability")) && i + 1 < argc)
+        reliability_floor = atoi (argv[++i]);
       else if ((!strcmp (argv[i], "-w") || !strcmp (argv[i], "--width")) && i + 1 < argc)
         width = atoi (argv[++i]);
       else if ((!strcmp (argv[i], "-h") || !strcmp (argv[i], "--height")) && i + 1 < argc)
@@ -610,15 +680,17 @@ main (int argc, char **argv)
           unsharp_sigma, unsharp_amount, threshold, gate,
           bozorth_min_computable_minutiae);
 
-  printf ("%-16s %-12s %9s %8s %s\n", "capture", "subject", "contrast", "minutiae", "");
+  printf ("%-16s %-12s %9s %8s %6s %8s %s\n",
+          "capture", "subject", "contrast", "minutiae", "kept", "med.rel", "");
   for (i = 0; i < (int) samples->len; i++)
     {
       sample *s = g_ptr_array_index (samples, i);
       const char *note = s->gated ? "  gated as blank"
                        : (gint) s->minutiae < bozorth_min_computable_minutiae
                          ? "  under bozorth floor" : "";
-      printf ("%-16s %-12s %9.1f %8u%s\n", s->name,
-              s->subject ? s->subject : "-", s->contrast, s->minutiae, note);
+      printf ("%-16s %-12s %9.1f %8u %6u %8.2f%s\n", s->name,
+              s->subject ? s->subject : "-", s->contrast,
+              s->minutiae_raw, s->minutiae, s->reliability, note);
     }
 
   /* Every sample as probe against every other as gallery. */
