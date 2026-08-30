@@ -935,7 +935,27 @@ fpi_device_fpc1021_class_init (FpiDeviceFpc1021Class *klass)
   img_class->activate = dev_activate;
   img_class->deactivate = dev_deactivate;
 
-  img_class->bz3_threshold = 24;
+  /* Not a tuned threshold: a refusal.
+   *
+   * This sensor does not separate fingers. Over 146 genuine and 160 impostor
+   * comparisons of well-placed captures, the highest genuine score and the
+   * highest impostor score are the same number -- 92 -- so no threshold
+   * admits any genuine match without also admitting the best impostor. At
+   * the 24 this driver used to carry, good captures were accepted 97% of the
+   * time and *strangers* 92% of the time; the apparent safety of 24 came
+   * from poor captures scoring low, not from the threshold doing anything.
+   *
+   * G_MAXINT rather than a large-looking number because the intent must not
+   * read as tuning. A comparison of an image against itself scores 1415-1606
+   * on these frames, so anything in the hundreds is reachable and would be a
+   * guess dressed as a bound.
+   *
+   * Do not lower this to make verification "work". What would justify a real
+   * threshold is a separation measurement -- tools/fpc_bench.c reports TAR at
+   * a capped FAR -- and the ones taken so far say there is nothing to
+   * separate. See libfprint-driver/README.md.
+   */
+  img_class->bz3_threshold = G_MAXINT;
 
   /* Resolution varies by exact FPC chip; determined at img_open time via
    * Get Chip ID and stored per-instance (self->width/height), not here. */

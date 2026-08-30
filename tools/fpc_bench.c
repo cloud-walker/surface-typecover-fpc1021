@@ -523,6 +523,15 @@ dist_sd (const dist *d)
 }
 
 static gint
+dist_max (const dist *d)
+{
+  gint m = 0;
+  for (gint i = 0; i < d->n; i++)
+    if (d->scores[i] > m) m = d->scores[i];
+  return m;
+}
+
+static gint
 dist_at_or_above (const dist *d, gint t)
 {
   gint n = 0;
@@ -570,9 +579,9 @@ report_separation (const dist *gen, const dist *imp, gint threshold)
   gdouble best_margin = -1e9;
 
   printf ("\nseparation\n\n");
-  printf ("  %-9s %5s %7s %7s\n", "", "pairs", "mean", "sd");
-  printf ("  %-9s %5d %7.1f %7.1f\n", "genuine", gen->n, mg, sg);
-  printf ("  %-9s %5d %7.1f %7.1f\n", "impostor", imp->n, mi, si);
+  printf ("  %-9s %5s %7s %7s %7s\n", "", "pairs", "mean", "sd", "max");
+  printf ("  %-9s %5d %7.1f %7.1f %7d\n", "genuine", gen->n, mg, sg, dist_max (gen));
+  printf ("  %-9s %5d %7.1f %7.1f %7d\n", "impostor", imp->n, mi, si, dist_max (imp));
 
   if (gen->n < 2 || imp->n < 2)
     {

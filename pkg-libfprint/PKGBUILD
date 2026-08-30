@@ -1,7 +1,12 @@
 # Maintainer: local build, patched with the fpc1021 driver
 #
 # Builds the same libfprint 1.94.100 that Arch's extra/libfprint ships, plus
-# our fpc1021 driver (Microsoft Surface Type Cover with Fingerprint ID).
+# our fpc1021 driver (Microsoft Surface Type Cover with Fingerprint ID) and
+# libfprint-driver/bozorth-floor.patch, which restores NIST's runtime control
+# of bozorth3's minimum computable minutia count. That patch changes no
+# behaviour on its own -- it defaults to the 10 libfprint hardcodes -- and is
+# carried so the 1x matching configuration can be tested on real hardware
+# rather than only on the offline bench.
 # Source is a fixed local checkout (already patched, already validated to
 # build and work against real hardware), not fetched from the network, so
 # this PKGBUILD only exists to get it installed and tracked via pacman
@@ -12,7 +17,7 @@
 
 pkgname=libfprint
 pkgver=1.94.100
-pkgrel=15
+pkgrel=16
 pkgdesc="Library for fingerprint readers (+ fpc1021 / Surface Type Cover driver)"
 arch=('x86_64')
 url="https://fprint.freedesktop.org/"

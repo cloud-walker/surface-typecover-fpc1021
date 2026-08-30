@@ -302,9 +302,12 @@ two fingers — but barely. At its best operating point, a threshold of 16, it
 would accept 45% of genuine attempts and **14% of a stranger's finger**. A
 d' of 0.26 is nothing: usable biometrics sit above 3.
 
-**No threshold makes this safe**, and `bz3_threshold` should stay at 24 —
-which in practice means verification rejects everything, and that is the
-honest state of it.
+**No threshold makes this safe.** `bz3_threshold` stayed at 24 for a while on
+the reasoning that this rejected everything and was therefore the honest state;
+[a later measurement on well-placed captures](#the-capture-protocol-and-the-pipeline-it-exposes-as-harmful)
+showed that was wrong — 24 accepted 92% of impostors once the frames were good.
+The threshold is now `G_MAXINT`, which refuses by construction rather than by
+luck.
 
 Note what this exposes about the tuning above: every image-processing
 parameter here was chosen by maximising *genuine* scores, with impostor
@@ -649,10 +652,32 @@ nothing, because with sharpening on every frame clears 10 anyway. It is the
 change that lets the better configuration exist, and that is the case to make
 upstream.
 
-The driver still ships 2x with unsharp 2.5 and a threshold of 24, because
-without the floor patch the 1x configuration is short-circuited by libfprint and
-scores nothing. Changing that is a decision, not a measurement, and it is
-recorded here rather than taken quietly.
+The driver still ships 2x with unsharp 2.5, because without the floor patch the
+1x configuration is short-circuited by libfprint and scores nothing. Changing
+that is a decision, not a measurement, and it is recorded here rather than taken
+quietly.
+
+#### The threshold, however, is changed
+
+`bz3_threshold` is now `G_MAXINT`. The number that forces it: over the natural
+batch the highest genuine score and the highest impostor score are **both 92**.
+There is no threshold that admits a genuine match without admitting the best
+impostor, so the only correct setting is one that admits nothing.
+
+`G_MAXINT` rather than a large-looking number, because the intent must not read
+as tuning and because nothing in the hundreds is out of reach — two images of
+the same press score 1415-1606, so any bound short of that would be a guess
+dressed up as a limit.
+
+This changes no behaviour a user would notice: verification rejected everything
+before and rejects everything now. What changes is *why*. Before, it rejected
+because captures were poor and scored under 24; a user with a clean, well-placed
+finger would have been let in, and so would anybody else. Now it rejects because
+the driver declines to claim it can tell people apart.
+
+Lowering it is not a tuning decision. What would justify a real threshold is a
+separation measurement — `fpc_bench` reports TAR at a capped FAR — and every one
+taken so far says there is nothing to separate.
 
 ### `fprintd-identify` appears to hang
 
