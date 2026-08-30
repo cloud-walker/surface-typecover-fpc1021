@@ -72,7 +72,8 @@ blank; in one where it was held, six of six carried a print.
 It is **not** a re-read of the same image. A frame and the ghost that follows
 it differ by a mean of 42 grey levels per pixel, which is the same order as two
 *separate presses* of one finger (25-51). The sensor is acquiring again, not
-retransmitting.
+retransmitting. (That difference was first read here as displacement; it is not
+— see the retraction below.)
 
 This does not change the drain, which still discards it — an unread reply
 desynchronises the protocol whatever the reply contains. It does retire
@@ -606,9 +607,38 @@ finger:
 | ghost-4 | 20.5 |
 | mean of the two | 29.3 |
 
-The average lands near the weaker half, not between them. That follows from the
-42-grey-level difference above: the two acquisitions are not aligned, so
-averaging superimposes offset ridge patterns and blurs rather than denoises.
+The average lands near the weaker half, not between them.
+
+**The explanation first given here was wrong, and is retracted.** It read that
+difference as misalignment — two unaligned acquisitions superimposing offset
+ridge patterns — which took a magnitude for a geometry and was never controlled.
+The control, run later: within-press differences are *smaller* than between-press
+differences for the same finger in the same session.
+
+| | mean grey-level difference per pixel |
+|---|---|
+| lindex, within one press (write-order-verified pairs) | 49.7, 54.5 |
+| lindex, between presses (6 frames, 15 pairs) | median 57.6 (44.8–69.7) |
+| nat_index, between presses (10 captures, 45 pairs) | median 36.4 (28.0–42.7) |
+
+So a ~50 grey-level difference is simply what two acquisitions of this finger
+look like. An NCC search over the same captures then measured the between-press
+displacement directly at a **median of 1.0 px**, so that magnitude appears where
+displacement is known to be tiny and cannot have implied displacement here
+either.
+
+The arithmetic closes it. Ridge period measures 10px, so 1px is 36° and
+averaging two ridge patterns that far apart costs about cos(18°) — 5% of
+amplitude. Measured on two healthy verified pairs, averaging costs tile contrast
+189.4 and 195.0 → 142.4, and 201.1 and 213.0 → 164.8: roughly **25%**, five
+times what displacement can account for.
+
+What actually differs between two acquisitions is therefore dominated by a
+decorrelated, noise-like component rather than by geometry, and averaging fails
+by diluting ridge contrast, not by blurring misaligned ridges. That is the same
+statement as the flat NCC radius sweep — if the difference is not geometric,
+searching further cannot fix it — and it is why the deliberately-varied batch
+cannot be rescued by a wider search either.
 
 **Selection is the interesting reading.** Frame quality varies enormously within
 a single enrolment — the twelve frames collected score between 7.8 and 55.0
