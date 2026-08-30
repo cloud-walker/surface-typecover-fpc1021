@@ -147,8 +147,6 @@ struct _FpiDeviceFpc1021
   guint8  *ghost_buf;
   gsize    ghost_len;
   gsize    ghost_have;
-  guint    ghost_seq;
-  guint    frame_seq;
 };
 
 G_DECLARE_FINAL_TYPE (FpiDeviceFpc1021, fpi_device_fpc1021, FPI,
@@ -524,7 +522,7 @@ fpc_frame_contrast (const guint8 *buf, gint width, gint height)
 
 /* Writes one raw frame into FPC1021_GHOST_DIR, for the diagnostic below. */
 static void
-fpc_dump_frame (FpiDeviceFpc1021 *self, const gchar *kind, guint seq,
+fpc_dump_frame (FpiDeviceFpc1021 *self, const gchar *kind,
                 const guint8 *buf, gsize len)
 {
   const gchar *dir = g_getenv ("FPC1021_GHOST_DIR");
@@ -534,7 +532,16 @@ fpc_dump_frame (FpiDeviceFpc1021 *self, const gchar *kind, guint seq,
   if (!dir || !buf || !len)
     return;
 
-  path = g_strdup_printf ("%s/%s-%u-%u.bin", dir, kind, (guint) getpid (), seq);
+  /* Named by capture time, not by a counter.
+   *
+   * The counters this used to carry live on the device instance, and fprintd
+   * recreates that between enrolment sessions -- so a second enrolment under
+   * one fprintd restarted at zero and silently overwrote the first one's
+   * frames. Microsecond wall-clock cannot collide at ~1.7s per capture, and
+   * it sorts into capture order, which a pid plus a counter did not do across
+   * sessions either. */
+  path = g_strdup_printf ("%s/%s-%" G_GINT64_FORMAT ".bin", dir, kind,
+                          g_get_real_time ());
   if (g_file_set_contents (path, (const gchar *) buf, (gssize) len, &error))
     fp_warn ("fpc1021: wrote %s frame %s (%zu bytes)", kind, path, len);
   else
@@ -552,7 +559,7 @@ deliver_image (FpDevice *dev)
   /* Paired with the ghost frame for the averaging experiment: written before
    * the gate, so a rejected frame still leaves its half of the pair. The
    * sequence numbers line up, frame-N against ghost-N. */
-  fpc_dump_frame (self, "frame", self->frame_seq++, self->image_buf,
+  fpc_dump_frame (self, "frame", self->image_buf,
                   (gsize) self->width * self->height);
 
   contrast = fpc_frame_contrast (self->image_buf, self->width, self->height);
@@ -821,7 +828,7 @@ fpc_ghost_feed (FpiDeviceFpc1021 *self, const guint8 *buf, gint len)
   if (self->ghost_have < self->ghost_len)
     return;
 
-  fpc_dump_frame (self, "ghost", self->ghost_seq++, self->ghost_buf, self->ghost_len);
+  fpc_dump_frame (self, "ghost", self->ghost_buf, self->ghost_len);
 
   g_clear_pointer (&self->ghost_buf, g_free);
   self->ghost_have = 0;

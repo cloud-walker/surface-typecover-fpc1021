@@ -630,13 +630,45 @@ So the sensor already hands us a free second frame, and minutia count says which
 one to keep. That is a concrete change: reassemble the drained frame rather than
 dropping it, extract from both, deliver whichever yields more minutiae.
 
-**Not yet measured: whether it improves separation.** Everything above is
-genuine scores, which is the objective this project has repeatedly been wrong to
-optimise. Frame selection could plausibly raise impostor scores just as much.
-Testing it needs a collection of many frame/ghost pairs across several fingers,
-then AUC on selected against unselected — the same standard every other change
-here has been held to. Until then this is a lead, not a result. The correlation
-rests on twelve frames of one finger in one session.
+**Measured against impostors, it does not survive.** Three more enrolments —
+right middle, right thumb, left index — give 35 frames across three fingers.
+Restricting the set to frames with more minutiae, which is what selection
+amounts to:
+
+| kept | genuine pairs | impostor pairs | AUC |
+|---|---|---|---|
+| every gated frame | 250 | 400 | 0.465 |
+| minutiae >= 40 | 172 | 290 | 0.450 |
+| minutiae >= 90 | 74 | 136 | 0.583 |
+| minutiae >= 120 | 62 | 48 | 0.443 |
+
+Not monotonic, all near chance, and the one apparent gain at 90 is contradicted
+by 120. **The 0.92 correlation was with genuine scores alone**, and raising
+genuine scores without separating is this project's recurring error — recorded
+here for the fourth time, and this time predicted in the paragraph that
+originally reported the correlation.
+
+So the ghost frame is explained and is worth nothing for matching. Averaging the
+pair is harmful, selecting between them is chance. What it settles is the
+protocol question, which was open since the wedge fix.
+
+Note also what these three fingers score on their own: AUC 0.465 over 650 pairs,
+at or below chance, on a set including a thumb that produced blank frames at
+half its enrolment stages. That is consistent with everything else measured
+here.
+
+#### A collection bug, and what it cost
+
+The frames were first named `<kind>-<pid>-<counter>.bin`. The counters live on
+the device instance and fprintd recreates that between enrolment sessions, so
+the third enrolment restarted at zero under the same pid and silently
+overwrote the first one's early frames. Six frames and two ghosts were lost;
+the rest were recovered by partitioning on the `enroll-completed` markers in
+the journal, which is why the right-middle group is smaller than the others.
+
+Dumps are now named by capture time in microseconds, which cannot collide at
+~1.7s per capture and sorts into capture order across sessions — which a pid
+and a counter did not.
 
 ### The capture protocol, and the pipeline it exposes as harmful
 
