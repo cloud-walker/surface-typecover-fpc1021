@@ -324,6 +324,30 @@ propped up with a lowered threshold: this sensor's 8x8mm window, through
 NBIS, does not currently separate fingers well enough to authenticate
 anybody.
 
+A literature pass against primary sources — [`../docs/research/small-area-matching.md`](../docs/research/small-area-matching.md)
+— confirms that position and sharpens it in two ways. First, minutiae matching
+really is the wrong tool at this area: NIST's own conclusion is that "image
+sizes below 320 pixels by 320 pixels should not be used" (NISTIR 7201), and
+this sensor delivers a quarter of that. Second, and less comfortably, d' 0.26
+is far below what the published record reports at a comparable window — FVC2006
+DB1 at 9.8mm, NISTIR 7201 at 9.1mm and FPC's own algorithm at 9.6mm work out to
+d' of roughly 3.2, 3.8 and 6.0. Area alone does not explain the gap; part of it
+belongs to this pipeline.
+
+Two findings there bear directly on the code above. The ten-minutia floor is a
+NIST *default*, adjustable via `-A minminutiae=#`, which libfprint freezes into
+a `#define` — its re-vendoring script strips NIST's runtime control of it
+(`nbis/update-from-nbis.sh:83-87`). The unsharp mask exists only to climb over
+that number, and it manufactures minutiae that the enlargement measurements
+above already showed do not correspond between two views of the same finger.
+And `fpi_print_bz3_match()` returns on the first stored template that clears
+the threshold (`fpi-print.c:262-265`), so the five enrolled prints are used as
+a maximum rather than fused — where the mosaicking literature puts score-level
+fusion at roughly an order of magnitude in EER.
+
+Neither closes the gap. The note ranks what might, and is explicit that nothing
+available does it in one step.
+
 ### `fprintd-identify` appears to hang
 
 It is not hanging on the driver. `fprintd-identify` keeps capturing until it
