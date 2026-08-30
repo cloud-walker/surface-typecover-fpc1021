@@ -819,7 +819,68 @@ about the same size as widening the translation radius by a comparable amount
 from "a larger search raises every maximum". Recorded as a small ambiguous
 gain, not a mechanism.
 
-#### A retraction, from the ghost-frame work
+#### Measuring the displacement directly, and what it overturns
+
+The section below was written as a retraction of the ghost-frame work's
+misalignment reading, on the strength of grey-level magnitudes. The direct
+measurement has since been made, and it overturns the retraction rather than
+the original claim. Both are kept, in the order they happened, because the
+sequence is the point: a magnitude argument was never able to settle a
+question about geometry, and it took the offset measurement to say anything.
+
+**First, the premise both accounts rested on is wrong.** The ghost is not
+captured milliseconds after its frame. The right-index collection is the first
+with per-file microsecond timestamps, and they give:
+
+| frame | ghost | interval |
+|---|---|---|
+| 1788118850954741 | 1788118854043685 | 3.089 s |
+| 1788118854856739 | 1788118857944937 | 3.088 s |
+| 1788118858716681 | 1788118861798911 | 3.082 s |
+
+Constant to within 7 ms, which fits the ~1.59 s acquisition time in
+[`../PROTOCOL.md`](../PROTOCOL.md) for two acquisitions back to back.
+Consecutive presses in the same enrolment are 3.4-4.8 s apart, so **a ghost
+sits nearly as far from its frame in time as the next press does.**
+
+**Second, the offsets on the pairs that actually correlate are large.** The
+score has to be read alongside the offset, because a large peak offset is also
+what no alignment looks like — impostor pairs peak at a median of 16.1 px
+precisely because the peak lands wherever the search box ends:
+
+| pair | NCC | peak offset |
+|---|---|---|
+| right index 1 | 0.729 | 15.0 px |
+| right index 2 | 0.660 | 18.4 px |
+| right index 3 | 0.455 | 24.5 px |
+| thumb 1-3 (older set) | 0.194, 0.100, 0.243 | not readable |
+| left index 1-2 (older set) | 0.192, 0.126 | not readable |
+
+The three right-index pairs sit well above the genuine population mean of
+0.326, so those peaks are true alignments. The five older pairs sit at or below
+the impostor mean and their offsets carry no information; they are listed so
+that the n is visible rather than implied.
+
+So on the three trustworthy pairs, **within-press displacement is 15-24 px
+against a between-press median of 1.0 px.** That is not a paradox once the
+interval is right: over a three-second hold the finger drifts about a
+millimetre, while between deliberate presses this subject re-targets to within
+a pixel. Sustained-contact drift and placement repeatability are different
+quantities, and only the second one is what a matcher's search radius has to
+cover.
+
+15-24 px is more than a full ridge period at 10 px, so averaging a frame with
+its ghost is destructive by misalignment after all. The ghost-frame reading was
+closer to right than the retraction below; what was wrong in it was
+"milliseconds", and the grey-level argument that replaced it could not settle
+the question in either direction.
+
+Not claimed: n is 3 on the strong pairs, one subject, one session, and the
+older sets cannot corroborate because they do not correlate. Displacement being
+*large enough* to explain the averaging failure is not evidence that it *causes*
+it — but it is more than the grey-level difference was ever able to say.
+
+#### The retraction this replaced, kept for the record
 
 §"The capture protocol, and the pipeline it exposes as harmful" reports that
 averaging a frame with the ghost captured milliseconds later within one
@@ -851,6 +912,15 @@ noise-like component rather than by geometry. That explains the averaging
 failure as contrast dilution rather than blur, and it is the same statement as
 the flat radius sweep: if displacement is not the problem, widening the search
 cannot be the fix.
+
+**That paragraph is what the direct measurement above overturned.** The
+grey-level comparison was sound as far as it went — within-press differences
+really do sit at the between-press median — but it licensed a conclusion about
+geometry that only an offset measurement could support, and the offsets say the
+opposite. The flat radius sweep still stands on its own evidence: between-press
+displacement is 1 px, so widening the search still cannot be the fix for
+*matching*. It is within-press drift that is large, and nothing in the matching
+path ever compares a frame with its own ghost.
 
 It is also why the deliberately-varied batch cannot be rescued. NCC is at chance
 there — AUC 0.543 at radius 2 and 0.538 at 20, against NBIS's 0.563 — and that
