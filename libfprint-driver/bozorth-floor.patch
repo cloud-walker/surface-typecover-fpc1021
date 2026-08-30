@@ -1,0 +1,38 @@
+diff --git a/libfprint/nbis/bozorth3/bozorth3.c b/libfprint/nbis/bozorth3/bozorth3.c
+index e2e668f..962c12a 100644
+--- a/libfprint/nbis/bozorth3/bozorth3.c
++++ b/libfprint/nbis/bozorth3/bozorth3.c
+@@ -601,6 +601,10 @@ static int yy[ YY_SIZE_1 ][ YY_SIZE_2 ][ YY_SIZE_3 ];
+ 
+ static int    bz_final_loop( int );
+ 
++/* NIST's default; see the comment on MIN_COMPUTABLE_BOZORTH_MINUTIAE in
++ * bozorth.h. Nothing changes unless a caller lowers it. */
++int bozorth_min_computable_minutiae = MIN_COMPUTABLE_BOZORTH_MINUTIAE_DEFAULT;
++
+ /**************************************************************************/
+ int bz_match_score(
+ 	int np,
+diff --git a/libfprint/nbis/include/bozorth.h b/libfprint/nbis/include/bozorth.h
+index fd8975b..acdb36e 100644
+--- a/libfprint/nbis/include/bozorth.h
++++ b/libfprint/nbis/include/bozorth.h
+@@ -119,7 +119,17 @@ extern float atanf( float );
+ #define DEFAULT_BOZORTH_MINUTIAE	150
+ #define MAX_BOZORTH_MINUTIAE		200
+ #define MIN_BOZORTH_MINUTIAE		0
+-#define MIN_COMPUTABLE_BOZORTH_MINUTIAE	10
++/* NIST exposed this as a command-line option: bozorth3(1E) documents
++ * "-A minminutiae=#", "That number is 10 by default, and can be changed to
++ * any non-zero integer". libfprint's re-vendoring script strips NIST's
++ * runtime globals and freezes this one into a constant
++ * (nbis/update-from-nbis.sh), which leaves a driver for a small-area sensor
++ * no way to lower it -- and manufacturing minutiae to climb over it instead
++ * costs precision. Restored as a variable, defaulting to NIST's 10 so
++ * nothing changes unless a caller asks. */
++#define MIN_COMPUTABLE_BOZORTH_MINUTIAE_DEFAULT	10
++extern int bozorth_min_computable_minutiae;
++#define MIN_COMPUTABLE_BOZORTH_MINUTIAE	bozorth_min_computable_minutiae
+ 
+ #define DEFAULT_MAX_MATCH_SCORE		400
+ #define ZERO_MATCH_SCORE		0

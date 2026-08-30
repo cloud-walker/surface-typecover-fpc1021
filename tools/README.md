@@ -154,10 +154,85 @@ over 6 ungated pairs:  best 15   mean 9.3   at or above 24: 0 (0%)
 ```
 
 Options: `-e` enlargement factor, `-t` threshold, `-g` blank-frame gate
-(0 disables), `-w`/`-h` capture dimensions.
+(0 disables), `-s`/`-a` unsharp sigma and amount (`-a 0` disables sharpening),
+`-m` bozorth3's computable minutia floor, `-S` a subject label, `-w`/`-h`
+capture dimensions.
 
 It found, in seconds, that the 3x enlargement chosen from live testing was
 worse than 2x — see `../libfprint-driver/README.md`.
+
+### Label the fingers: `-S`
+
+Separation between genuine and impostor comparisons is the objective here, and
+for a while it was computed by reading the score matrix by hand. That went
+wrong once — a classification dropped the second finger's own genuine pairs,
+which made the separation look inverted rather than merely tiny.
+
+So the bench classifies pairs itself. `-S` labels every capture after it:
+
+```sh
+fpc_bench -e 2 -S left-index shot1.bin place1.bin -S right-index other1.bin other3.bin
+```
+
+Same label, genuine pair; different label, impostor pair. Filenames are never
+parsed for this, because no convention could know that `shot*` and `place*` are
+the same finger. Unlabelled captures are scored and printed but left out of the
+separation statistics, since a capture belonging to no finger cannot be
+classified either way.
+
+With two or more labels the run ends with:
+
+```
+separation
+
+            pairs    mean      sd
+  genuine      32    18.9     9.0
+  impostor     24    13.5     9.9
+
+  d' = 0.58   (usable biometrics sit above 3)
+
+  at the shipped threshold 24:  accepts 38% of genuine, 17% of impostor
+  best operating point 16:      accepts 62% of genuine, 17% of impostor
+```
+
+`d'` is the distance between the two means in pooled standard deviations. It is
+the number that decides whether any threshold is safe, and unlike a raw score it
+compares across configurations. The operating point is the threshold maximising
+genuine-accept minus false-accept — with distributions this close no threshold
+is simply right, and what the best available trade *costs* is the honest report.
+
+Gated frames are excluded from both classes, which is what the driver does to
+them in reality. An earlier hand count evidently included them; it reported a d'
+of 0.26 for the configuration that measures 0.58 here.
+
+### Lowering the bozorth3 floor: `-m`
+
+`bozorth3` refuses to compute a score if either side carries fewer than
+`MIN_COMPUTABLE_BOZORTH_MINUTIAE` minutiae. NIST made that adjustable — the
+`bozorth3(1E)` man page documents `-A minminutiae=#`, "That number is 10 by
+default, and can be changed to any non-zero integer" — but libfprint's
+re-vendoring script strips NIST's runtime globals and freezes it into a
+`#define` (`nbis/update-from-nbis.sh:83-87`).
+
+`../libfprint-driver/bozorth-floor.patch` restores the variable, defaulting to
+NIST's 10 so nothing changes unless a caller asks:
+
+```sh
+cd /path/to/libfprint && git apply /path/to/repo/libfprint-driver/bozorth-floor.patch
+ninja -C build
+```
+
+Then `-m N` sets it. **Without the patch the bench still builds** and everything
+except `-m` behaves identically — `-m` reports what is missing and exits — so a
+stock libfprint checkout remains usable.
+
+### `-s 0` used to hand NBIS a frame of NaN
+
+Worth knowing, because it produced a plausible-looking wrong answer rather than
+a crash. Sigma 0 divides by zero in the Gaussian, every pixel becomes NaN, and
+the frame yields zero minutiae — which reads exactly like "this configuration
+finds nothing" instead of like a bug. Sharpening is now skipped when either
+sigma or amount is zero. Use `-a 0` to turn it off.
 
 ### Building it
 

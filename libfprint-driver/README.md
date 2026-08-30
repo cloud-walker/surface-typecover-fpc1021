@@ -348,6 +348,95 @@ fusion at roughly an order of magnitude in EER.
 Neither closes the gap. The note ranks what might, and is explicit that nothing
 available does it in one step.
 
+### Testing that: the floor is not the lever, and the sharpening earns its place
+
+The cheapest item on that ranking was to lift the floor and drop the sharpening
+that only existed to climb over it, on the reasoning that manufactured minutiae
+cost precision. **Measured, that is wrong**, and the pipeline stays as it is.
+
+The measurement needed two things first. `tools/fpc_bench.c` now classifies pairs
+itself from `-S` labels instead of leaving the score matrix to be read by hand,
+and reports mean, standard deviation and d' per class — the hand classification
+had already gone wrong once. And `bozorth-floor.patch` restores NIST's runtime
+control of the floor to the vendored NBIS, so `-m` can move it at all.
+
+Over nine captures of one finger and two of a second, 32 genuine and 24 impostor
+pairs, at 2x:
+
+| configuration | genuine | impostor | d' |
+|---|---|---|---|
+| **unsharp 1.5/2.5, floor 10 (shipped)** | **18.9** | **13.5** | **0.58** |
+| unsharp 1.5/2.5, floor 8 / 6 / 4 / 2 | 18.9 | 13.5 | 0.58 |
+| no sharpening, floor 10 | 4.8 | 5.8 | -0.12 |
+| no sharpening, floor 8 | 5.4 | 5.9 | -0.07 |
+| no sharpening, floor 6 / 4 / 2 | 6.4 | 5.9 | 0.08 |
+
+Two things fall out. **The floor is a non-lever while sharpening is on** — every
+frame already clears 10 by a wide margin, so moving it to 2 changes nothing at
+all. And **removing the sharpening costs half a d'**, which the floor cannot buy
+back: the best unsharpened configuration reaches 0.08 against 0.58.
+
+So the sharpening is not merely inflating minutia counts to beat a threshold.
+Whatever it does to the ridge structure survives the separation objective, which
+is the objective the rest of this pipeline was tuned against and should have been.
+
+Re-tuning both parameters on that objective, rather than on genuine scores:
+
+| sigma | amount | genuine | impostor | d' |
+|---|---|---|---|---|
+| 1.5 | 1.5 | 17.7 | 12.2 | 0.54 |
+| 1.5 | 2.0 | 15.9 | 12.5 | 0.36 |
+| **1.5** | **2.5** | **18.9** | **13.5** | **0.58** |
+| 1.5 | 3.0 | 20.4 | 15.3 | 0.49 |
+| 1.5 | 4.0 | 20.6 | 16.0 | 0.45 |
+| 1.0 | 2.5 | 19.6 | 20.0 | -0.05 |
+| 2.0 | 2.5 | 12.5 | 11.6 | 0.12 |
+
+The shipped 1.5/2.5 is the best cell of both sweeps, which is luck rather than
+method — it was chosen by maximising genuine scores and happens to survive the
+right objective. The rows around it show why that is luck: amount 3.0 and 4.0
+score *higher* genuine than the shipped setting and separate worse, and sigma
+1.0 — which was this bench's own default — scores 19.6 genuine against 20.0
+impostor, i.e. it prefers a stranger's finger.
+
+None of this closes anything. d' moves from 0.08 to 0.58 against a target above
+3, and the differences among the sharpened rows are smaller than 24 impostor
+pairs from two images can resolve. What it does settle is that the floor and the
+sharpening are answered, and that the next thing to spend effort on is the
+impostor set — which the research note already ranked first, for this reason.
+
+### How fragile all of this is, measured
+
+Falling out of the same runs, and worth more than the result they were for.
+Splitting the genuine side by how the finger was placed, against the *same two*
+impostor captures throughout:
+
+| genuine captures | genuine | impostor | d' |
+|---|---|---|---|
+| `shot1-3` — one finger, never lifted | 22.2 | 8.2 | **2.24** |
+| `place1,3,4` — same finger, varied placements | 19.5 | 18.8 | **0.08** |
+| all nine mixed | 18.9 | 13.5 | 0.58 |
+
+The genuine means barely move: 22.2, 19.5, 18.9. **The entire swing is on the
+impostor side**, from 8.2 to 18.8 — against an impostor set that never changed.
+Certain placements of the enrolled finger score against a stranger's finger as
+highly as against themselves; `place3` scores 31 and 39 against the two impostor
+captures, above most of its genuine pairs.
+
+So the similarity this pipeline measures is driven at least as much by *how the
+finger was placed* as by *whose finger it is*. That is a hypothesis about
+mechanism — plausibly the interpolation and sharpening manufacturing structure
+common to any frame from this sensor — but the measurement itself is not in
+doubt.
+
+The practical consequence is immediate: **d' on this dataset ranges from 0.08 to
+2.24 depending on which captures you choose**, so no number in any table above
+can rank two configurations against each other. They can only say that
+sharpening beats no sharpening by more than that range, which they do. Every
+finer comparison has to wait on a real impostor set. The research note ranked
+that first on the reasoning that nothing else is decidable without it; this is
+that reasoning demonstrated instead of asserted.
+
 ### `fprintd-identify` appears to hang
 
 It is not hanging on the driver. `fprintd-identify` keeps capturing until it
