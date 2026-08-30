@@ -24,12 +24,37 @@
  *   -e, --enlarge N     enlargement factor (default 3, as the driver ships)
  *   -t, --threshold N   bz3 threshold to report against (default 24)
  *   -g, --gate N        blank-frame tile-contrast gate (default 40, 0 disables)
+ *   -s, --sigma F       unsharp sigma (0 with -a 0 disables sharpening)
+ *   -a, --amount F      unsharp amount (0 disables sharpening)
+ *   -m, --min-minutiae N  bozorth3's computable floor (default NIST's 10)
+ *   -S, --subject NAME  label the captures that follow; see below
  *   -w, --width N       capture width (default 160)
  *   -h, --height N      capture height (default 160)
  *
  * Every capture is used once as a probe against all the others as a
  * template, which is the closest offline analogue of "enroll on some
  * presses, verify with another".
+ *
+ * Separation, not score, is the objective
+ * ---------------------------------------
+ * Every image parameter in this driver was once chosen by maximising
+ * *genuine* scores without measuring impostors, and two of the
+ * configurations that looked best that way score impostors higher than
+ * genuine matches. Raising all the scores together is not progress.
+ *
+ * So the bench classifies pairs itself rather than leaving it to whoever
+ * reads the matrix -- a hand classification got this wrong once already,
+ * by dropping the second finger's own genuine pairs. Label each finger
+ * with -S and every pair becomes genuine (same label) or impostor
+ * (different label):
+ *
+ *   fpc_bench -S left-index shot1.bin place1.bin -S right-index other1.bin
+ *
+ * With two or more labels the bench reports mean, standard deviation and
+ * d' for each class, and sweeps the threshold to find the operating point
+ * with the best genuine-accept/false-accept trade. Filenames are never
+ * parsed for this: shot* and place* are the same finger, and no naming
+ * convention could know that.
  */
 
 #include <stdio.h>
@@ -44,17 +69,36 @@
 
 #include "bozorth.h"
 
+/* bozorth3's computable minutia floor.
+ *
+ * NIST shipped this as a command-line option -- bozorth3(1E) documents
+ * "-A minminutiae=#", default 10, "can be changed to any non-zero integer"
+ * -- and libfprint's re-vendoring script freezes it into a #define
+ * (nbis/update-from-nbis.sh). libfprint-driver/bozorth-floor.patch restores
+ * NIST's runtime control of it; with that applied the header defines
+ * MIN_COMPUTABLE_BOZORTH_MINUTIAE_DEFAULT and -m works. Without it the
+ * bench still builds and everything except -m behaves identically, which
+ * keeps it usable against a stock libfprint checkout.
+ */
+#ifdef MIN_COMPUTABLE_BOZORTH_MINUTIAE_DEFAULT
+#define FPC_FLOOR_SETTABLE 1
+#else
+#define FPC_FLOOR_SETTABLE 0
+static gint bozorth_min_computable_minutiae = MIN_COMPUTABLE_BOZORTH_MINUTIAE;
+#endif
+
 #define DEFAULT_ENLARGE 3
 #define DEFAULT_THRESHOLD 24
 #define DEFAULT_GATE 40.0
 #define QUALITY_TILE 16
 
 typedef struct {
-  char    *name;
-  FpPrint *print;        /* one print, holding this capture's minutiae */
-  guint    minutiae;
-  gdouble  contrast;
-  gboolean gated;        /* rejected by the blank-frame gate */
+  char       *name;
+  const char *subject;   /* which finger this is, from -S; NULL if unlabelled */
+  FpPrint    *print;     /* one print, holding this capture's minutiae */
+  guint       minutiae;
+  gdouble     contrast;
+  gboolean    gated;     /* rejected by the blank-frame gate */
 } sample;
 
 /* Unsharp mask, applied to the raw frame before enlargement.
@@ -67,15 +111,24 @@ typedef struct {
  * MIN_COMPUTABLE_BOZORTH_MINUTIAE any more, and the share of captures that
  * match another capture of the same finger goes from 2 in 11 to 5 in 11.
  *
+ * Clearing the floor is not the reason to keep it, though -- the floor can be
+ * lowered instead (see -m), and doing that without sharpening reaches d' 0.08
+ * against 0.58 with it. The sharpening earns its place on separation.
+ *
  * That asymmetry is the point: enrollment retries until a stage is accepted,
  * so it quietly selects good frames, while a verification is scored on
  * whatever arrives. Sharpening raises the floor for the verification.
  *
- * sigma 1.0 with amount 2.0 was the best of a grid over both.
+ * sigma 1.5 with amount 2.5 is what the driver ships, and is the best cell of
+ * a sweep of both against *separation* rather than genuine score. The
+ * distinction matters: sigma 1.0 at the same amount scores 19.6 genuine
+ * against 20.0 impostor, so it separates the wrong way while looking like an
+ * improvement on genuine scores alone.
  */
-/* Tunable from the command line in the bench; fixed constants in the driver. */
-static gdouble unsharp_sigma = 1.0;
-static gdouble unsharp_amount = 2.0;
+/* Tunable from the command line in the bench; fixed constants in the driver.
+ * The defaults track the driver, so a bare run measures what ships. */
+static gdouble unsharp_sigma = 1.5;
+static gdouble unsharp_amount = 2.5;
 #define FPC_UNSHARP_SIGMA unsharp_sigma
 #define FPC_UNSHARP_AMOUNT unsharp_amount
 /* Kernel half-width, tied to sigma so the Gaussian is not silently
@@ -90,6 +143,13 @@ fpc_unsharp (guint8 *buf, gint width, gint height)
   const gint r = MIN (FPC_UNSHARP_RADIUS, FPC_UNSHARP_MAX_RADIUS);
   gdouble kernel[2 * FPC_UNSHARP_MAX_RADIUS + 1];
   gdouble sum = 0.0;
+
+  /* Both zeros mean "no sharpening", which is a configuration worth
+   * measuring rather than a mistake. Taken literally, sigma 0 divides by
+   * zero in the Gaussian below and hands NBIS a frame of NaN, which reads
+   * as a plausible zero-minutiae result instead of an obvious failure. */
+  if (FPC_UNSHARP_AMOUNT == 0.0 || FPC_UNSHARP_SIGMA <= 0.0)
+    return;
   g_autofree gdouble *tmp = g_new (gdouble, (gsize) width * height);
   g_autofree gdouble *blur = g_new (gdouble, (gsize) width * height);
 
@@ -266,7 +326,7 @@ read_raw (const char *path, gsize expected)
 
 /* The driver's delivery path: raw frame -> gate -> enlarge -> ppmm. */
 static gboolean
-load_sample (sample *s, const char *path, gint w, gint h,
+load_sample (sample *s, const char *path, const char *subject, gint w, gint h,
              gint enlarge, gdouble gate)
 {
   g_autofree guint8 *raw = read_raw (path, (gsize) w * h);
@@ -276,6 +336,7 @@ load_sample (sample *s, const char *path, gint w, gint h,
   if (!raw) return FALSE;
 
   s->name = g_path_get_basename (path);
+  s->subject = subject;
   /* Gate on the raw frame, before sharpening, which is where the threshold
    * was calibrated and where a blank frame is unambiguous. */
   s->contrast = frame_contrast (raw, w, h);
@@ -348,6 +409,113 @@ score_pair (sample *probe, sample *gallery)
   return bozorth_to_gallery (probe_len, p, g);
 }
 
+/* Genuine and impostor score distributions, and what separates them.
+ *
+ * d' is the separation in units of the pooled standard deviation --
+ * (mean_genuine - mean_impostor) / sqrt((sd_g^2 + sd_i^2) / 2). It is the
+ * number that decides whether any threshold is safe, and it is scale-free,
+ * so it compares across configurations in a way raw scores do not. Usable
+ * biometrics sit above 3.
+ */
+typedef struct {
+  gint    n;
+  gdouble sum, sumsq;
+  gint   *scores;
+  gint    cap;
+} dist;
+
+static void
+dist_add (dist *d, gint score)
+{
+  if (d->n == d->cap)
+    {
+      d->cap = d->cap ? d->cap * 2 : 64;
+      d->scores = g_renew (gint, d->scores, d->cap);
+    }
+  d->scores[d->n++] = score;
+  d->sum += score;
+  d->sumsq += (gdouble) score * score;
+}
+
+static gdouble
+dist_mean (const dist *d)
+{
+  return d->n ? d->sum / d->n : 0.0;
+}
+
+static gdouble
+dist_sd (const dist *d)
+{
+  gdouble m, var;
+
+  if (d->n < 2) return 0.0;
+  m = dist_mean (d);
+  var = d->sumsq / d->n - m * m;
+  return var > 0.0 ? sqrt (var) : 0.0;
+}
+
+static gint
+dist_at_or_above (const dist *d, gint t)
+{
+  gint n = 0;
+  for (gint i = 0; i < d->n; i++)
+    if (d->scores[i] >= t) n++;
+  return n;
+}
+
+static void
+report_separation (const dist *gen, const dist *imp, gint threshold)
+{
+  gdouble mg = dist_mean (gen), mi = dist_mean (imp);
+  gdouble sg = dist_sd (gen), si = dist_sd (imp);
+  gdouble pooled = sqrt ((sg * sg + si * si) / 2.0);
+  gint best_t = 0, hi = 0;
+  gdouble best_margin = -1e9;
+
+  printf ("\nseparation\n\n");
+  printf ("  %-9s %5s %7s %7s\n", "", "pairs", "mean", "sd");
+  printf ("  %-9s %5d %7.1f %7.1f\n", "genuine", gen->n, mg, sg);
+  printf ("  %-9s %5d %7.1f %7.1f\n", "impostor", imp->n, mi, si);
+
+  if (gen->n < 2 || imp->n < 2)
+    {
+      printf ("\n  too few pairs on one side to compute d'\n");
+      return;
+    }
+
+  printf ("\n  d' = %.2f", pooled > 0.0 ? (mg - mi) / pooled : 0.0);
+  printf ("   (usable biometrics sit above 3)\n");
+
+  /* Sweep every threshold the scores actually reach. The best operating
+   * point is the one maximising genuine-accept minus false-accept: with
+   * distributions this close there is no threshold that is simply "right",
+   * and the honest report is what the best available trade costs. */
+  for (gint i = 0; i < gen->n; i++)
+    if (gen->scores[i] > hi) hi = gen->scores[i];
+  for (gint i = 0; i < imp->n; i++)
+    if (imp->scores[i] > hi) hi = imp->scores[i];
+
+  for (gint t = 1; t <= hi + 1; t++)
+    {
+      gdouble tar = (gdouble) dist_at_or_above (gen, t) / gen->n;
+      gdouble far = (gdouble) dist_at_or_above (imp, t) / imp->n;
+      if (tar - far > best_margin)
+        {
+          best_margin = tar - far;
+          best_t = t;
+        }
+    }
+
+  printf ("\n  at the shipped threshold %d:  accepts %.0f%% of genuine, %.0f%% of impostor\n",
+          threshold,
+          100.0 * dist_at_or_above (gen, threshold) / gen->n,
+          100.0 * dist_at_or_above (imp, threshold) / imp->n);
+  printf ("  best operating point %d:      accepts %.0f%% of genuine, %.0f%% of impostor\n",
+          best_t,
+          100.0 * dist_at_or_above (gen, best_t) / gen->n,
+          100.0 * dist_at_or_above (imp, best_t) / imp->n);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -355,6 +523,7 @@ main (int argc, char **argv)
   gint width = 160, height = 160;
   gdouble gate = DEFAULT_GATE;
   GPtrArray *samples = g_ptr_array_new ();
+  const char *subject = NULL;
   int i;
 
   for (i = 1; i < argc; i++)
@@ -369,6 +538,21 @@ main (int argc, char **argv)
         unsharp_amount = atof (argv[++i]);
       else if ((!strcmp (argv[i], "-g") || !strcmp (argv[i], "--gate")) && i + 1 < argc)
         gate = atof (argv[++i]);
+      else if ((!strcmp (argv[i], "-m") || !strcmp (argv[i], "--min-minutiae")) && i + 1 < argc)
+        {
+          if (!FPC_FLOOR_SETTABLE)
+            {
+              fprintf (stderr, "-m needs libfprint-driver/bozorth-floor.patch "
+                               "applied to the libfprint this was built against;\n"
+                               "    without it the floor is a compile-time constant.\n");
+              return 2;
+            }
+          bozorth_min_computable_minutiae = atoi (argv[++i]);
+        }
+      /* Applies to every capture after it, so one command line can carry
+       * several fingers. */
+      else if ((!strcmp (argv[i], "-S") || !strcmp (argv[i], "--subject")) && i + 1 < argc)
+        subject = argv[++i];
       else if ((!strcmp (argv[i], "-w") || !strcmp (argv[i], "--width")) && i + 1 < argc)
         width = atoi (argv[++i]);
       else if ((!strcmp (argv[i], "-h") || !strcmp (argv[i], "--height")) && i + 1 < argc)
@@ -376,7 +560,7 @@ main (int argc, char **argv)
       else
         {
           sample *s = g_new0 (sample, 1);
-          if (load_sample (s, argv[i], width, height, enlarge, gate))
+          if (load_sample (s, argv[i], subject, width, height, enlarge, gate))
             g_ptr_array_add (samples, s);
           else
             g_free (s);
@@ -390,18 +574,20 @@ main (int argc, char **argv)
       return 2;
     }
 
-  printf ("enlarge %dx -> %dx%d   unsharp sigma %.2f amount %.2f   threshold %d   gate %.0f\n\n",
+  printf ("enlarge %dx -> %dx%d   unsharp sigma %.2f amount %.2f   threshold %d   gate %.0f   floor %d\n\n",
           enlarge, width * enlarge, height * enlarge,
-          unsharp_sigma, unsharp_amount, threshold, gate);
+          unsharp_sigma, unsharp_amount, threshold, gate,
+          bozorth_min_computable_minutiae);
 
-  printf ("%-16s %9s %8s %s\n", "capture", "contrast", "minutiae", "");
+  printf ("%-16s %-12s %9s %8s %s\n", "capture", "subject", "contrast", "minutiae", "");
   for (i = 0; i < (int) samples->len; i++)
     {
       sample *s = g_ptr_array_index (samples, i);
       const char *note = s->gated ? "  gated as blank"
-                       : s->minutiae < MIN_COMPUTABLE_BOZORTH_MINUTIAE
+                       : (gint) s->minutiae < bozorth_min_computable_minutiae
                          ? "  under bozorth floor" : "";
-      printf ("%-16s %9.1f %8u%s\n", s->name, s->contrast, s->minutiae, note);
+      printf ("%-16s %-12s %9.1f %8u%s\n", s->name,
+              s->subject ? s->subject : "-", s->contrast, s->minutiae, note);
     }
 
   /* Every sample as probe against every other as gallery. */
@@ -412,6 +598,12 @@ main (int argc, char **argv)
 
   gint best = 0, matches = 0, pairs = 0;
   gdouble total = 0;
+  dist genuine = { 0 }, impostor = { 0 };
+  gboolean labelled = FALSE;
+
+  for (i = 0; i < (int) samples->len; i++)
+    if (((sample *) g_ptr_array_index (samples, i))->subject)
+      labelled = TRUE;
 
   for (i = 0; i < (int) samples->len; i++)
     {
@@ -431,6 +623,13 @@ main (int argc, char **argv)
           total += sc;
           if (sc > best) best = sc;
           if (sc >= threshold) matches++;
+
+          /* An unlabelled capture belongs to no finger, so it cannot be
+           * classified either way; counting it as genuine is precisely the
+           * mistake this labelling exists to prevent. */
+          if (probe->subject && gallery->subject)
+            dist_add (!strcmp (probe->subject, gallery->subject)
+                      ? &genuine : &impostor, sc);
         }
       printf ("\n");
     }
@@ -438,6 +637,16 @@ main (int argc, char **argv)
   printf ("\nover %d ungated pairs:  best %d   mean %.1f   at or above %d: %d (%.0f%%)\n",
           pairs, best, pairs ? total / pairs : 0.0, threshold, matches,
           pairs ? 100.0 * matches / pairs : 0.0);
+
+  if (labelled)
+    report_separation (&genuine, &impostor, threshold);
+  else
+    printf ("\nno -S labels given, so no pair can be called genuine or "
+            "impostor;\nseparation is the objective here, so label the "
+            "fingers and re-run.\n");
+
+  g_free (genuine.scores);
+  g_free (impostor.scores);
 
   return 0;
 }
