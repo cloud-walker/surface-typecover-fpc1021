@@ -17,7 +17,12 @@ point.
   - `0x83` IN (sensor -> host, replies)
   - Both `wMaxPacketSize = 64`, full-speed (12 Mbps).
 - Sensor chip: Fingerprint Cards **FPC1021**, a capacitive area/touch sensor,
-  **160x160 px, 8 bits/pixel grayscale**.
+  **160x160 px at 508 dpi, 8 bits/pixel grayscale** — an 8.0 x 8.0 mm
+  (64 mm²) imaging window. Both figures are stated by FPC's own product
+  sheet ([FPC1021 Product Sheet][flyer], "Quick reference data": "Pixel
+  matrix — 508dpi resolution — 160 x 160 pixels"), and the 508 dpi was
+  independently confirmed here from the measured ridge period (see the
+  `ppmm` derivation in `libfprint-driver/fpc1021.c`).
 - The same USB "shell"/hardware ID also covers other Type Cover fingerprint
   revisions using sibling FPC chips (see the auto-detection table below) —
   this document focuses on FPC1021, the chip found in this Surface Pro 7's
@@ -110,9 +115,46 @@ but not yet reimplemented here.
 
 - The purpose of opcode `0x0005` is unknown; not required for a basic capture.
 - Enrollment/template-storage flow (as opposed to a single raw image capture) has not been explored — this device operates in WinBio's "Basic" sensor mode, meaning matching happens host-side, so a Linux driver only needs to reproduce image capture, not any on-chip enrollment protocol.
+  FPC's product sheet confirms this from the vendor's side. The product is
+  described as the sensor **plus** an algorithm — "This biometric product
+  consists of touch fingerprint sensor FPC1021 and fingerprint recognition
+  algorithm" — shipped in software configurations including "a version for
+  Windows Biometrics Framework (WBF) for laptop consumer products". And the
+  algorithm's stated host requirements are application-processor figures, not
+  on-chip ones: "RAM: 8MB during enroll and fingerprint verification", a
+  Cortex A7 @1.3GHz minimum with floating-point, a Cortex A15 @2.3GHz with
+  NEON recommended ([FPC1021 Product Sheet][flyer]). **There is no
+  match-on-chip path on this part.** Matching was always the host's job, done
+  by a proprietary FPC library, on Windows as much as anywhere else — so a
+  Linux driver is not failing to reproduce something that was ever available
+  to it.
 - No encryption or attestation (e.g. Microsoft's SDCP) is involved anywhere in this path.
+- **Navigation mode is unexplored.** FPC advertises the part as "Thin, compact
+  and easy to integrate including navigation function" ([FPC1021 Product
+  Sheet][flyer]), so the chip supports some gesture/motion mode that this
+  document does not cover; none of the opcodes above is known to enter one.
+  Worth chasing in the Windows driver, because a mode that streams frames fast
+  enough to track motion is exactly the primitive a frame-accumulation or
+  mosaicking matcher would need, and libfprint's `fpi_assemble_frames()`
+  cannot represent a stationary finger — so that path otherwise has to be
+  built from scratch (see
+  [`docs/research/other-projects-small-area.md`](docs/research/other-projects-small-area.md)).
+  The caveat that would kill it: navigation modes commonly read a small
+  sub-window at a high frame rate rather than the full frame, which would make
+  it useless for matching. Unverified in either direction.
 
 ## Related
 
 - [linux-surface/linux-surface#353](https://github.com/linux-surface/linux-surface/issues/353) — tracks community interest in Linux support for this exact hardware.
 - [fingerprint-cards/capacitive_device_driver](https://github.com/fingerprint-cards/capacitive_device_driver) — FPC's own published Linux driver code for a different (I2C) FPC1xxx product line; not directly usable here (different transport) but a useful cross-reference for the vendor's conventions.
+- [FPC1021 Product Sheet][flyer] — Fingerprint Cards' own flyer for this exact
+  chip. Confirms 160x160 at 508 dpi, and documents the sensor as shipping with
+  FPC's proprietary host-side recognition algorithm, WBF configuration
+  included. It publishes no biometric performance figures for the FPC1021 —
+  "top ranked in independent tests" appears without a number — so it does not
+  bear on accuracy; the nearest first-party numbers are the FPC-BM module
+  spec's, and those are for the larger FPC1020 (see
+  [`docs/research/small-area-matching.md`](docs/research/small-area-matching.md)).
+  Retrieved from a third-party mirror, not from FPC.
+
+[flyer]: https://biometrics.mainguet.org/types/fingerprint/product/FPC/FPC_1021_flyer.pdf
