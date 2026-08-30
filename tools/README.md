@@ -189,7 +189,8 @@ separation
   genuine      32    18.9     9.0
   impostor     24    13.5     9.9
 
-  d' = 0.58   (usable biometrics sit above 3)
+  d'  = 0.58   (usable biometrics sit above 3)
+  AUC = 0.687   (0.5 is chance; d' assumes Gaussians, AUC does not)
 
   at the shipped threshold 24:  accepts 38% of genuine, 17% of impostor
   best operating point 16:      accepts 62% of genuine, 17% of impostor
@@ -197,7 +198,12 @@ separation
 
 `d'` is the distance between the two means in pooled standard deviations. It is
 the number that decides whether any threshold is safe, and unlike a raw score it
-compares across configurations. The operating point is the threshold maximising
+compares across configurations. `AUC` is the probability that a random genuine
+pair outscores a random impostor pair, ties splitting the credit — reported
+alongside because d' assumes two Gaussians and these distributions are not. On a
+weak configuration most scores are exactly zero, and that pile of ties shrinks
+the standard deviations and inflates d'; AUC has no such assumption, and 0.5 is
+chance. The operating point is the threshold maximising
 genuine-accept minus false-accept — with distributions this close no threshold
 is simply right, and what the best available trade *costs* is the honest report.
 
